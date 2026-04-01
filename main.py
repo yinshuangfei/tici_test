@@ -412,6 +412,7 @@ def build_insert_namespace(args: argparse.Namespace) -> argparse.Namespace:
         password=args.password,
         database=args.database,
         table=args.table,
+        count=1,
         mysql_bin=args.mysql_bin,
         batch_size=args.batch_size,
         row_limit=args.row_limit,
