@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS test.hdfs_log (
   - `--count`，默认 `1`
   - `--mysql-bin`，默认 `mysql`
   - `--batch-size`，默认 `1000`
-  - `--row-limit`，默认 `0`，表示不限制导入行数
+  - `--row-limit`，默认 `100000`
   - `--progress-interval`，默认 `3`，表示每隔多少秒输出一次进度
   - `--encoding`，默认 `utf-8`
   - `--delimiter`，默认 `,`

@@ -20,7 +20,7 @@ DEFAULT_DATABASE = "test"
 DEFAULT_TABLE = "hdfs_log"
 DEFAULT_COLUMNS = ("timestamp", "severity_text", "body", "tenant_id")
 DEFAULT_BATCH_SIZE = 1000
-DEFAULT_ROW_LIMIT = 0
+DEFAULT_ROW_LIMIT = 100000
 DEFAULT_PROGRESS_INTERVAL = 3.0
 DEFAULT_CSV_FILE = "data/hdfs-logs-multitenants.csv"
 
@@ -178,7 +178,7 @@ def add_insert_data_args(parser: argparse.ArgumentParser, *, csv_file_nargs: str
         "--row-limit",
         type=int,
         default=DEFAULT_ROW_LIMIT,
-        help="Maximum number of data rows to import, default: 0 means no limit",
+        help=f"Maximum number of data rows to import, default: {DEFAULT_ROW_LIMIT}",
     )
     parser.add_argument(
         "--progress-interval",
