@@ -33,7 +33,7 @@ DEFAULT_IMPORT_COLUMNS = ("timestamp", "severity_text", "body", "tenant_id")
 DEFAULT_IMPORT_THREAD = 8
 DEFAULT_AUTO_ROW_LIMIT = 100000
 DEFAULT_QUERY_SQL = (
-    "select count(*) from test.hdfs_log "
+    "select '1' as table_idx, count(*) from test.hdfs_log "
     "where fts_match_word('china',body) or not fts_match_word('china',body);"
 )
 SQL_BARE_VALUE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -203,12 +203,17 @@ def print_query_summary(command: str, *, dry_run: bool) -> None:
     print(f"[{command}] mode={mode}")
 
 
-def build_query_sql(args: argparse.Namespace, table_name: str) -> str:
+def build_query_sql(args: argparse.Namespace, table_name: str, table_idx: int) -> str:
     target_name = format_table_target(args.database, table_name)
+    if args.tikv:
+        return f"select '{table_idx}' as table_idx,count(*) from {table_name};"
     if "{table}" in args.sql:
         return args.sql.format(table=target_name)
     if args.sql == DEFAULT_QUERY_SQL:
-        return args.sql.replace(f"{DEFAULT_DATABASE}.{DEFAULT_TABLE}", target_name)
+        return (
+            args.sql.replace("select '1' as table_idx", f"select '{table_idx}' as table_idx", 1)
+            .replace(f"{DEFAULT_DATABASE}.{DEFAULT_TABLE}", target_name)
+        )
     return args.sql
 
 
@@ -373,6 +378,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Query SQL text",
     )
     query_parser.add_argument(
+        "--tikv",
+        action="store_true",
+        help="Use select '<idx>' as table_idx,count(*) from <table_name> for each target table",
+    )
+    query_parser.add_argument(
         "--query-loop-count",
         type=int,
         default=1,
@@ -513,9 +523,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             query_table_names = build_table_names(args.table, args.count)
             print_command_summary(args.command, args.database, query_table_names, dry_run=args.dry_run)
             query_sqls = []
-            for table_name in query_table_names:
+            for table_idx, table_name in enumerate(query_table_names, start=1):
                 target_name = format_table_target(args.database, table_name)
-                sql = build_query_sql(args, table_name)
+                sql = build_query_sql(args, table_name, table_idx)
                 for idx in range(1, args.query_loop_count + 1):
                     query_sqls.append(("query", target_name, sql, f"round={idx}/{args.query_loop_count}"))
             run_sqls(build_client(args), query_sqls, args.dry_run, parallel=args.query_loop_count != 1)

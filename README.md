@@ -30,6 +30,7 @@ python main.py drop-index
 python main.py query
 python main.py query --query-loop-count 10
 python main.py query --count 4
+python main.py query --count 4 --tikv
 python main.py query --sql "select count(*) from test.hdfs_log;"
 python main.py query --count 4 --sql "select count(*) from {table};"
 python main.py import-into
@@ -49,6 +50,7 @@ In `auto`, the insert stage runs in parallel by table when actually executing. `
 `query` defaults to `select count(*) from test.hdfs_log where fts_match_word('china',body) or not fts_match_word('china',body);`.
 `query --query-loop-count` controls how many times the same query is executed. The default is `1`.
 `query --count` controls how many tables are queried with the `<table>_<num>` naming rule. For custom SQL, `{table}` can be used as a placeholder for the current `database.table`.
+`query --tikv` uses `select '<idx>' as table_idx,count(*) from <table_name>;` for each target table.
 When `query --query-loop-count > 1`, the query executions run in parallel. `--dry-run` still prints SQL sequentially to keep output readable.
 
 ## insert_data.py
