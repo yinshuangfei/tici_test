@@ -70,6 +70,27 @@ python insert_data.py data/hdfs-logs-multitenants.csv --has-header
 python insert_data.py data/hdfs-logs-multitenants.csv --batch-size 1000 --row-limit 5000 --progress-interval 3
 ```
 
+## tici.py
+
+`tici.py` queries TiCI metadata from `tici.tici_shard_meta`.
+By default it runs:
+
+```sql
+select table_id,index_id,shard_id,progress from `tici`.`tici_shard_meta`;
+```
+
+It accepts the same MySQL connection style as the other scripts: `--host`, `--port`, `--user`, `--password`, `--database`, and `--mysql-bin`.
+The metadata database is fixed to `tici`. `--meta-table` can be used to override the metadata table name. `--dry-run` prints the SQL without executing it.
+
+Examples:
+
+```bash
+python tici.py
+python tici.py --dry-run
+python tici.py --host 127.0.0.1 --port 4000 --user root
+python tici.py --meta-table tici_shard_meta --dry-run
+```
+
 ## prepare_data.py
 
 `prepare_data.py` downloads source files for later import steps.
