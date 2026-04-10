@@ -74,6 +74,7 @@ INSERT INTO test.hdfs_log (`timestamp`, `severity_text`, `body`, `tenant_id`) VA
 - `--row-limit` 控制总导入行数上限，`--batch-size` 只控制单条 `INSERT INTO` 语句包含的行数
 - 非 `--dry-run` 模式下，数据库写入通过 Python `mysql.connector` 库按批次执行
 - 每批数据使用参数化批量插入，避免手工拼接值再交给外部 `mysql` 客户端执行
+- 当单批次插入失败时，程序会对该批次最多重试 5 次，每次重试前等待 1 秒，并重新建立数据库连接
 - 进度输出按时间间隔控制，不再按每个批次输出
 - 当达到 `--print-interval` 指定的秒数间隔时，输出当前表名、累计导入行数和已耗时
 - 导入结束后，输出当前表名、最终总导入行数和总耗时

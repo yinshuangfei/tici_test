@@ -56,7 +56,7 @@ When `query --query-loop-count > 1`, the query executions run in parallel. `--dr
 ## insert_data.py
 
 `insert_data.py` reads a CSV file and inserts rows into `test.hdfs_log`.
-It reads and inserts data batch by batch through the Python `mysql.connector` library. The default batch size is `1000`, the default row limit is `100000`, and progress is printed every `3` seconds by default.
+It reads and inserts data batch by batch through the Python `mysql.connector` library. The default batch size is `1000`, the default row limit is `100000`, and progress is printed every `3` seconds by default. When a batch insert fails, it retries up to `5` times with a `1` second interval.
 If `csv_file` is omitted, it uses `data/hdfs-logs-multitenants.csv`.
 When `--count > 1`, target tables follow the `<table>_<num>` naming rule. Multi-table execution runs in parallel unless `--dry-run` is used.
 

@@ -22,6 +22,8 @@ DEFAULT_COLUMNS = ("timestamp", "severity_text", "body", "tenant_id")
 DEFAULT_BATCH_SIZE = 1000
 DEFAULT_ROW_LIMIT = 100000
 DEFAULT_PROGRESS_INTERVAL = 3.0
+DEFAULT_INSERT_RETRY_COUNT = 5
+DEFAULT_INSERT_RETRY_INTERVAL = 1.0
 DEFAULT_CSV_FILE = "data/hdfs-logs-multitenants.csv"
 
 
@@ -143,6 +145,20 @@ def build_insert_statement(database: str, table: str) -> str:
     return f"INSERT INTO {target} ({columns}) VALUES ({placeholders})"
 
 
+def reconnect_client(
+    client: MySQLClient,
+    connection: Optional[mysql.connector.MySQLConnection],
+    cursor,
+):
+    if cursor is not None:
+        cursor.close()
+    if connection is not None:
+        connection.close()
+    connection = client.connect()
+    cursor = connection.cursor()
+    return connection, cursor
+
+
 def add_insert_data_args(parser: argparse.ArgumentParser, *, csv_file_nargs: str = "?") -> None:
     parser.add_argument(
         "csv_file",
@@ -230,8 +246,27 @@ def run_insert_data_for_table(args: argparse.Namespace) -> int:
             if args.dry_run:
                 print(sql)
             else:
-                cursor.executemany(insert_statement, batch)
-                connection.commit()
+                for attempt in range(1, DEFAULT_INSERT_RETRY_COUNT + 1):
+                    try:
+                        cursor.executemany(insert_statement, batch)
+                        connection.commit()
+                        break
+                    except mysql.connector.Error as exc:
+                        try:
+                            connection.rollback()
+                        except mysql.connector.Error:
+                            pass
+
+                        if attempt == DEFAULT_INSERT_RETRY_COUNT:
+                            raise
+
+                        print(
+                            f"[{target_name}] insert batch failed attempt={attempt}/{DEFAULT_INSERT_RETRY_COUNT} "
+                            f"rows={len(batch)} retry_in={DEFAULT_INSERT_RETRY_INTERVAL:.1f}s error={exc}",
+                            file=sys.stderr,
+                        )
+                        time.sleep(DEFAULT_INSERT_RETRY_INTERVAL)
+                        connection, cursor = reconnect_client(client, connection, cursor)
             imported_rows += len(batch)
             now = time.monotonic()
             if args.print_interval == 0 or now - last_progress_at >= args.print_interval:
