@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 import insert_data
+import mysql.connector
 
 
 DEFAULT_HOST = "10.2.12.81"
@@ -67,6 +68,15 @@ class MySQLClient:
     mysql_bin: str = "mysql"
     comments: bool = True
 
+    def connect(self) -> mysql.connector.MySQLConnection:
+        return mysql.connector.connect(
+            host=self.host,
+            port=self.port,
+            user=self.user,
+            password=self.password,
+            database=self.database,
+        )
+
     def base_command(self) -> List[str]:
         cmd = [
             self.mysql_bin,
@@ -92,6 +102,21 @@ class MySQLClient:
             print(f"$ {shlex.join(cmd)}")
             print(sql)
         subprocess.run(cmd, check=True)
+
+    def query(self, sql: str, *, echo: bool = False) -> str:
+        if echo:
+            cmd = self.base_command() + ["-D", self.database, "-e", sql]
+            print(f"$ {shlex.join(cmd)}")
+            print(sql)
+        connection = self.connect()
+        cursor = connection.cursor()
+        try:
+            cursor.execute(sql)
+            lines = ["\t".join("" if value is None else str(value) for value in row) for row in cursor.fetchall()]
+            return "\n".join(lines)
+        finally:
+            cursor.close()
+            connection.close()
 
 
 def create_table_sql(database: str, table_name: str) -> str:
@@ -203,12 +228,20 @@ def print_query_summary(command: str, *, dry_run: bool) -> None:
     print(f"[{command}] mode={mode}")
 
 
-def build_query_sql(args: argparse.Namespace, table_name: str, table_idx: int) -> str:
+def build_query_sql(
+    args: argparse.Namespace,
+    table_name: str,
+    table_idx: int,
+    *,
+    tikv: Optional[bool] = None,
+) -> str:
     target_name = format_table_target(args.database, table_name)
-    if args.tikv:
+    if tikv is None:
+        tikv = getattr(args, "tikv", False)
+    if tikv:
         return f"select '{table_idx}' as table_idx,count(*) from {table_name};"
     if "{table}" in args.sql:
-        return args.sql.format(table=target_name)
+        return args.sql.replace("{table}", target_name)
     if args.sql == DEFAULT_QUERY_SQL:
         return (
             args.sql.replace("select '1' as table_idx", f"select '{table_idx}' as table_idx", 1)
@@ -252,6 +285,116 @@ def run_sqls(
             future.result()
             done_suffix = f" {detail}" if detail is not None else ""
             print(f"[{action_name}] done target={target_name}{done_suffix}")
+
+
+def normalize_query_output(output: str) -> str:
+    return "\n".join(line.rstrip() for line in output.strip().splitlines())
+
+
+def run_queries(
+    client: MySQLClient,
+    sql_statements: Sequence[Tuple[str, str, str, Optional[str]]],
+    dry_run: bool,
+    *,
+    parallel: bool = False,
+) -> None:
+    if dry_run or not parallel or len(sql_statements) <= 1:
+        for action_name, target_name, sql, detail in sql_statements:
+            
+            if detail is not None:
+                print(f"[{action_name}] {detail}")
+            if dry_run:
+                print(sql)
+            else:
+                output = client.query(sql)
+                if output:
+                    print(f"[{action_name}] target={target_name}, {output}")
+        return
+
+    print(f"[query] threads={len(sql_statements)}")
+
+    def run_one_query(item: Tuple[str, str, str, Optional[str]]) -> Tuple[str, str, Optional[str], str]:
+        action_name, target_name, sql, detail = item
+        print(f"[{action_name}] target={target_name}")
+        if detail is not None:
+            print(f"[{action_name}] {detail}")
+        output = client.query(sql)
+        return action_name, target_name, detail, output
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(sql_statements)) as executor:
+        future_map = {executor.submit(run_one_query, item): item for item in sql_statements}
+        for future in concurrent.futures.as_completed(future_map):
+            action_name, target_name, detail, output = future.result()
+            if output:
+                print(output)
+            done_suffix = f" {detail}" if detail is not None else ""
+            print(f"[{action_name}] done target={target_name}{done_suffix}")
+
+
+def run_query(args: argparse.Namespace) -> int:
+    if args.query_loop_count < 1:
+        print("query loop count must be >= 1", file=sys.stderr)
+        return 2
+    if args.count < 1:
+        print("query table count must be >= 1", file=sys.stderr)
+        return 2
+
+    print_query_summary(args.command, dry_run=args.dry_run)
+    query_table_names = build_table_names(args.table, args.count)
+    print_command_summary(args.command, args.database, query_table_names, dry_run=args.dry_run)
+
+    query_sqls = []
+    for idx in range(1, args.query_loop_count + 1):
+        print(f"[query] round={idx}/{args.query_loop_count}")
+        for table_idx, table_name in enumerate(query_table_names, start=1):
+            target_name = format_table_target(args.database, table_name)
+            sql = build_query_sql(args, table_name, table_idx)
+            query_sqls.append(("query", target_name, sql, None))
+
+    run_queries(build_client(args), query_sqls, args.dry_run, parallel=args.query_loop_count != 1)
+    return 0
+
+
+def run_check(args: argparse.Namespace) -> int:
+    if args.query_loop_count < 1:
+        print("check loop count must be >= 1", file=sys.stderr)
+        return 2
+    if args.count < 1:
+        print("check table count must be >= 1", file=sys.stderr)
+        return 2
+
+    print_query_summary(args.command, dry_run=args.dry_run)
+    query_table_names = build_table_names(args.table, args.count)
+    print_command_summary(args.command, args.database, query_table_names, dry_run=args.dry_run)
+
+    client = build_client(args)
+    for idx in range(1, args.query_loop_count + 1):
+        round_detail = f"round={idx}/{args.query_loop_count}"
+        print(f"[check] {round_detail}")
+        for table_idx, table_name in enumerate(query_table_names, start=1):
+            target_name = format_table_target(args.database, table_name)
+            normal_sql = build_query_sql(args, table_name, table_idx, tikv=False)
+            tikv_sql = build_query_sql(args, table_name, table_idx, tikv=True)
+
+            if args.dry_run:
+                print("[check] variant=normal")
+                print(normal_sql)
+                print("[check] variant=tikv")
+                print(tikv_sql)
+                continue
+
+            normal_output = normalize_query_output(client.query(normal_sql))
+            tikv_output = normalize_query_output(client.query(tikv_sql))
+            if normal_output != tikv_output:
+                print(f"[check] mismatch target={target_name} {round_detail}", file=sys.stderr)
+                print("[check] normal result:", file=sys.stderr)
+                print(f"tici: {normal_output or '<empty>'}", file=sys.stderr)
+                print("[check] tikv result:", file=sys.stderr)
+                print(f"tikv: {tikv_output or '<empty>'}", file=sys.stderr)
+                return 1
+            print(f"[check] match target={target_name} {normal_output}")
+
+    return 0
 
 
 def add_common_connection_args(parser: argparse.ArgumentParser) -> None:
@@ -389,6 +532,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="How many times to execute the query, default: 1",
     )
 
+    check_parser = subparsers.add_parser("check", help="Compare query results with and without TiKV mode")
+    add_common_connection_args(check_parser)
+    check_parser.add_argument("--table", default=DEFAULT_TABLE, help=f"Base table name, default: {DEFAULT_TABLE}")
+    check_parser.add_argument(
+        "--count",
+        type=int,
+        default=1,
+        help="Table count for check targets. >1 creates <table>_<num>",
+    )
+    check_parser.add_argument(
+        "--sql",
+        default=DEFAULT_QUERY_SQL,
+        help="Query SQL text used for the non-TiKV side",
+    )
+    check_parser.add_argument(
+        "--query-loop-count",
+        type=int,
+        default=1,
+        help="How many times to execute the comparison, default: 1",
+    )
+
     insert_parser = subparsers.add_parser("insert-data", help="Read CSV data and insert into a table")
     insert_data.add_insert_data_args(insert_parser, csv_file_nargs="?")
 
@@ -512,23 +676,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return insert_data.run_insert_data(args)
 
         if args.command == "query":
-            if args.query_loop_count < 1:
-                print("query loop count must be >= 1", file=sys.stderr)
-                return 2
-            if args.count < 1:
-                print("query table count must be >= 1", file=sys.stderr)
-                return 2
-            print_query_summary(args.command, dry_run=args.dry_run)
-            query_table_names = build_table_names(args.table, args.count)
-            print_command_summary(args.command, args.database, query_table_names, dry_run=args.dry_run)
-            query_sqls = []
-            for table_idx, table_name in enumerate(query_table_names, start=1):
-                target_name = format_table_target(args.database, table_name)
-                sql = build_query_sql(args, table_name, table_idx)
-                for idx in range(1, args.query_loop_count + 1):
-                    query_sqls.append(("query", target_name, sql, f"round={idx}/{args.query_loop_count}"))
-            run_sqls(build_client(args), query_sqls, args.dry_run, parallel=args.query_loop_count != 1)
-            return 0
+            return run_query(args)
+
+        if args.command == "check":
+            return run_check(args)
 
         client = build_client(args)
         table_names = build_table_names(args.table, getattr(args, "count", 1))
@@ -611,6 +762,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except subprocess.CalledProcessError as exc:
         print(f"command failed with exit code {exc.returncode}", file=sys.stderr)
         return exc.returncode
+    except mysql.connector.Error as exc:
+        print(f"mysql error: {exc}", file=sys.stderr)
+        return 1
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2

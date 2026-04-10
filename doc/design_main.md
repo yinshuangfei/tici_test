@@ -83,6 +83,23 @@ select count(*) from test.hdfs_log where fts_match_word('china',body) or not fts
 - 当 `--dry-run` 时，查询阶段保持串行输出，避免多线程打乱 SQL 文本显示
 - `query` 支持通过 `--dry-run` 只输出 SQL 而不真正执行
 
+### Check
+- 提供 `check` 子命令用于校验同一张表在普通查询和 `--tikv` 查询下返回结果是否一致
+- `check` 默认复用 `query` 的默认查询语句：
+```
+select count(*) from test.hdfs_log where fts_match_word('china',body) or not fts_match_word('china',body);
+```
+- `check` 支持 `--table` 指定基础表名，默认 `hdfs_log`
+- `check` 支持 `--count` 指定目标表数量，默认 `1`
+- 当 `--count > 1` 时，表名命名规则为 `hdfs_log_<num>`，例如 `hdfs_log_1`、`hdfs_log_2`
+- `check` 支持通过 `--sql` 指定普通查询侧使用的 SQL
+- 当自定义 SQL 中包含 `{table}` 时，执行时会替换为当前目标表的 `database.table`
+- `check` 的 TiKV 对照侧固定使用 `select '<idx>' as table_idx,count(*) from <table_name>;`
+- `check` 支持通过 `--query-loop-count` 指定同一组对比重复执行的次数，默认 `1`
+- `check` 在真实执行时按目标表和轮次串行执行，每轮先执行普通查询，再执行 TiKV 对照查询
+- 如果某一轮返回结果不一致，`check` 会立即输出两边结果并返回非 0
+- 当 `--dry-run` 时，`check` 会打印每一轮的普通查询 SQL 和 TiKV 对照 SQL，而不真正执行
+
 ### Auto 模版
 - `auto` 子命令用于提供一套固定流程模版
 - 默认流程如下：
