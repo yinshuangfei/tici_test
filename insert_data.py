@@ -4,13 +4,13 @@
 import argparse
 import concurrent.futures
 import csv
-import shlex
-import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Iterator, List, Optional, Sequence, Tuple
+from typing import Iterator, List, Optional, Sequence, Tuple
+
+import mysql.connector
 
 
 DEFAULT_HOST = "10.2.12.81"
@@ -50,38 +50,15 @@ class MySQLClient:
     user: str = DEFAULT_USER
     database: str = DEFAULT_DATABASE
     password: str = ""
-    mysql_bin: str = "mysql"
-    comments: bool = True
 
-    def command(self) -> List[str]:
-        cmd = [
-            self.mysql_bin,
-            "--host",
-            self.host,
-            "--port",
-            str(self.port),
-            "-u",
-            self.user,
-        ]
-        if self.comments:
-            cmd.append("--comments")
-        if self.password:
-            cmd.append(f"-p{self.password}")
-        cmd.extend(["-D", self.database])
-        return cmd
-
-    def execute_script(self, sql_script: str, *, echo: bool = False) -> None:
-        cmd = self.command()
-        if echo:
-            print(f"$ {shlex.join(cmd)}")
-        subprocess.run(cmd, input=sql_script, text=True, check=True)
-
-    def execute(self, sql: str, *, echo: bool = False) -> None:
-        cmd = self.command()
-        if echo:
-            print(f"$ {shlex.join(cmd)}")
-            print(sql)
-        subprocess.run(cmd, input=sql, text=True, check=True)
+    def connect(self) -> mysql.connector.MySQLConnection:
+        return mysql.connector.connect(
+            host=self.host,
+            port=self.port,
+            user=self.user,
+            password=self.password,
+            database=self.database,
+        )
 
 
 def normalize_delimiter(value: str) -> str:
@@ -159,6 +136,13 @@ def build_insert_sql(database: str, table: str, rows: Sequence[Tuple[int, str, s
     return f"INSERT INTO {target} ({columns}) VALUES\n" + ",\n".join(values) + ";"
 
 
+def build_insert_statement(database: str, table: str) -> str:
+    target = f"{quote_identifier(database)}.{quote_identifier(table)}"
+    columns = ", ".join(quote_identifier(column) for column in DEFAULT_COLUMNS)
+    placeholders = ", ".join(["%s"] * len(DEFAULT_COLUMNS))
+    return f"INSERT INTO {target} ({columns}) VALUES ({placeholders})"
+
+
 def add_insert_data_args(parser: argparse.ArgumentParser, *, csv_file_nargs: str = "?") -> None:
     parser.add_argument(
         "csv_file",
@@ -172,7 +156,6 @@ def add_insert_data_args(parser: argparse.ArgumentParser, *, csv_file_nargs: str
     parser.add_argument("--database", default=DEFAULT_DATABASE, help=f"Database name, default: {DEFAULT_DATABASE}")
     parser.add_argument("--table", default=DEFAULT_TABLE, help=f"Base table name, default: {DEFAULT_TABLE}")
     parser.add_argument("--count", type=int, default=1, help="Table count. >1 creates <table>_<num>")
-    parser.add_argument("--mysql-bin", default="mysql", help="Path to mysql client binary")
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Rows per batch insert statement")
     parser.add_argument(
         "--row-limit",
@@ -181,7 +164,7 @@ def add_insert_data_args(parser: argparse.ArgumentParser, *, csv_file_nargs: str
         help=f"Maximum number of data rows to import, default: {DEFAULT_ROW_LIMIT}",
     )
     parser.add_argument(
-        "--progress-interval",
+        "--print-interval",
         type=float,
         default=DEFAULT_PROGRESS_INTERVAL,
         help="Progress output interval in seconds, default: 3",
@@ -205,7 +188,6 @@ def build_client(args: argparse.Namespace) -> MySQLClient:
         user=args.user,
         password=args.password,
         database=args.database,
-        mysql_bin=args.mysql_bin,
     )
 
 
@@ -232,21 +214,35 @@ def run_insert_data_for_table(args: argparse.Namespace) -> int:
         batch_size=args.batch_size,
     )
     client = build_client(args)
+    insert_statement = build_insert_statement(args.database, args.table)
     imported_rows = 0
     started_at = time.monotonic()
     last_progress_at = started_at
-    for batch in batches:
-        sql = build_insert_sql(args.database, args.table, batch)
-        if args.dry_run:
-            print(sql)
-        else:
-            client.execute(sql)
-        imported_rows += len(batch)
-        now = time.monotonic()
-        if args.progress_interval == 0 or now - last_progress_at >= args.progress_interval:
-            elapsed = now - started_at
-            print(f"[{target_name}] progress imported {imported_rows} rows in {elapsed:.1f}s")
-            last_progress_at = now
+    connection = None
+    cursor = None
+    try:
+        if not args.dry_run:
+            connection = client.connect()
+            cursor = connection.cursor()
+
+        for batch in batches:
+            sql = build_insert_sql(args.database, args.table, batch)
+            if args.dry_run:
+                print(sql)
+            else:
+                cursor.executemany(insert_statement, batch)
+                connection.commit()
+            imported_rows += len(batch)
+            now = time.monotonic()
+            if args.print_interval == 0 or now - last_progress_at >= args.print_interval:
+                elapsed = now - started_at
+                print(f"[{target_name}] progress imported {imported_rows} rows in {elapsed:.1f}s")
+                last_progress_at = now
+    finally:
+        if cursor is not None:
+            cursor.close()
+        if connection is not None:
+            connection.close()
 
     if imported_rows == 0:
         print(f"[{target_name}] no data rows found")
@@ -267,8 +263,8 @@ def run_insert_data(args: argparse.Namespace, parser: Optional[argparse.Argument
     if args.row_limit < 0:
         print("row limit must be >= 0", file=sys.stderr)
         return 2
-    if args.progress_interval < 0:
-        print("progress interval must be >= 0", file=sys.stderr)
+    if args.print_interval < 0:
+        print("print interval must be >= 0", file=sys.stderr)
         return 2
 
     csv_path = Path(getattr(args, "csv_file", None) or DEFAULT_CSV_FILE)
@@ -307,9 +303,9 @@ def run_insert_data(args: argparse.Namespace, parser: Optional[argparse.Argument
                     )
                     return exit_code
         return 0
-    except subprocess.CalledProcessError as exc:
-        print(f"command failed with exit code {exc.returncode}", file=sys.stderr)
-        return exc.returncode
+    except mysql.connector.Error as exc:
+        print(f"database operation failed: {exc}", file=sys.stderr)
+        return 1
     except UnicodeDecodeError as exc:
         print(f"failed to decode csv file with encoding {args.encoding}: {exc}", file=sys.stderr)
         return 2

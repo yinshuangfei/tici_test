@@ -293,7 +293,7 @@ def add_insert_runtime_args(
         help=f"Maximum number of data rows to import, default: {default_row_limit}",
     )
     parser.add_argument(
-        "--progress-interval",
+        "--print-interval",
         type=float,
         default=insert_data.DEFAULT_PROGRESS_INTERVAL,
         help=f"Progress output interval in seconds, default: {insert_data.DEFAULT_PROGRESS_INTERVAL:g}",
@@ -423,10 +423,9 @@ def build_insert_namespace(args: argparse.Namespace) -> argparse.Namespace:
         database=args.database,
         table=args.table,
         count=1,
-        mysql_bin=args.mysql_bin,
         batch_size=args.batch_size,
         row_limit=args.row_limit,
-        progress_interval=args.progress_interval,
+        print_interval=args.print_interval,
         encoding=args.encoding,
         delimiter=args.delimiter,
         has_header=args.has_header,

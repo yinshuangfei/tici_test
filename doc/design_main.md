@@ -97,6 +97,7 @@ select count(*) from test.hdfs_log where fts_match_word('china',body) or not fts
 - `auto` 默认导入 `100000` 行数据
 - `auto` 默认 csv 文件路径为 `data/hdfs-logs-multitenants.csv`
 - `auto` 的数据导入阶段复用 `insert_data.py` 的批量插入逻辑
+- `auto` 的数据导入阶段通过 Python `mysql.connector` 库执行批量插入
 - 当 `--count > 1` 时，`auto` 会对每一张目标表依次执行建表、加索引、导入数据的相同流程
 - `auto` 中的建表和加索引阶段复用 `run_sqls` 的多线程逻辑
 - `auto` 中的建表和加索引按阶段执行：先完成所有表的建表，再开始所有表的加索引

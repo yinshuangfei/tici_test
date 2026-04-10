@@ -37,10 +37,9 @@ CREATE TABLE IF NOT EXISTS test.hdfs_log (
   - `--database`，默认 `test`
   - `--table`，默认 `hdfs_log`
   - `--count`，默认 `1`
-  - `--mysql-bin`，默认 `mysql`
   - `--batch-size`，默认 `1000`
   - `--row-limit`，默认 `100000`
-  - `--progress-interval`，默认 `3`，表示每隔多少秒输出一次进度
+  - `--print-interval`，默认 `3`，表示每隔多少秒输出一次进度
   - `--encoding`，默认 `utf-8`
   - `--delimiter`，默认 `,`
   - `--has-header`，指定后跳过首行表头
@@ -55,7 +54,7 @@ timestamp,severity_text,body,tenant_id
 - 当 `--count > 1` 时，表名命名规则为 `hdfs_log_<num>`，例如 `hdfs_log_1`、`hdfs_log_2`
 - 程序按单批次插入方式执行：
   - 每次从 CSV 中读取 `--batch-size` 条数据，默认 1000 条
-  - 为这一批数据构建一条 `INSERT INTO ... VALUES (...)` SQL
+  - 为这一批数据构建一条 `INSERT INTO ... VALUES (...)` SQL 供 `--dry-run` 输出
   - 执行完成后继续从上次读取偏移处处理下一批
   - 直到达到 `--row-limit` 指定的上限，或者文件读取结束
 - 当 `--count > 1` 时，会对每一张目标表执行相同的导入流程
@@ -73,9 +72,10 @@ INSERT INTO test.hdfs_log (`timestamp`, `severity_text`, `body`, `tenant_id`) VA
 ```
 - 程序不会先拼接整份 CSV 的总 SQL，而是逐批构建并逐批执行
 - `--row-limit` 控制总导入行数上限，`--batch-size` 只控制单条 `INSERT INTO` 语句包含的行数
-- 数据库写入通过 `mysql` 客户端按批次执行，每批执行一条 `INSERT INTO` 语句
+- 非 `--dry-run` 模式下，数据库写入通过 Python `mysql.connector` 库按批次执行
+- 每批数据使用参数化批量插入，避免手工拼接值再交给外部 `mysql` 客户端执行
 - 进度输出按时间间隔控制，不再按每个批次输出
-- 当达到 `--progress-interval` 指定的秒数间隔时，输出当前表名、累计导入行数和已耗时
+- 当达到 `--print-interval` 指定的秒数间隔时，输出当前表名、累计导入行数和已耗时
 - 导入结束后，输出当前表名、最终总导入行数和总耗时
 - 当 CSV 文件不存在、解码失败、列数不正确、整数转换失败时，脚本直接报错退出
 - 当 CSV 中没有有效数据行时，输出带表名的 `no data rows found`
