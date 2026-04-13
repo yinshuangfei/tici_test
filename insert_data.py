@@ -22,7 +22,7 @@ DEFAULT_COLUMNS = ("timestamp", "severity_text", "body", "tenant_id")
 DEFAULT_BATCH_SIZE = 1000
 DEFAULT_ROW_LIMIT = 100000
 DEFAULT_PROGRESS_INTERVAL = 3.0
-DEFAULT_INSERT_RETRY_COUNT = 5
+DEFAULT_INSERT_RETRY_COUNT = 10
 DEFAULT_INSERT_RETRY_INTERVAL = 1.0
 DEFAULT_CSV_FILE = "data/hdfs-logs-multitenants.csv"
 
@@ -258,6 +258,9 @@ def run_insert_data_for_table(args: argparse.Namespace) -> int:
                             pass
 
                         if attempt == DEFAULT_INSERT_RETRY_COUNT:
+                            print(f"[{target_name}] [FATAL ERROR] insert batch failed attempt={attempt}/{DEFAULT_INSERT_RETRY_COUNT} "
+                                  f"rows={len(batch)} error={exc}",
+                                  file=sys.stderr)
                             raise
 
                         print(
