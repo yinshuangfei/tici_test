@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS test.hdfs_log (
   - `--encoding`，默认 `utf-8`
   - `--delimiter`，默认 `,`
   - `--has-header`，指定后跳过首行表头
+  - `--freshness`，指定后在导入完成后轮询查询当前表行数，直到本次导入数据全部可见或超时
   - `--dry-run`，只输出 SQL，不真正执行
 - CSV 默认按以下列顺序读取：
 ```
@@ -74,7 +75,19 @@ INSERT INTO test.hdfs_log (`timestamp`, `severity_text`, `body`, `tenant_id`) VA
 - `--row-limit` 控制总导入行数上限，`--batch-size` 只控制单条 `INSERT INTO` 语句包含的行数
 - 非 `--dry-run` 模式下，数据库写入通过 Python `mysql.connector` 库按批次执行
 - 每批数据使用参数化批量插入，避免手工拼接值再交给外部 `mysql` 客户端执行
-- 当单批次插入失败时，程序会对该批次最多重试 5 次，每次重试前等待 1 秒，并重新建立数据库连接
+- 当单批次插入失败时，程序会对该批次最多重试 10 次，每次重试前等待 1 秒，并重新建立数据库连接
+- 插入重试日志和最终失败日志除了输出到标准错误外，还会追加写入当前目录下的 `log/insert_error.log`
+- 导入结束后的 `completed import` 日志除了输出到标准输出外，还会追加写入当前目录下的 `log/insert_result.log`
+- 当 `--freshness` 指定时，程序会在导入前先查询一次当前目标表总行数，记为基线值
+- 导入结束后，如果 `--freshness` 指定，则循环执行：
+```
+SELECT COUNT(*) FROM <table> WHERE fts_match_word('china',body) OR NOT fts_match_word('china',body);
+```
+  - 当当前总行数减去基线值等于本次成功导入行数时，视为 freshness 达成
+  - 轮询超时时间固定为 30 分钟
+  - 轮询间隔固定为 5 秒
+  - 每次 freshness 查询的开始、轮询结果和最终状态都会追加写入当前目录下的 `log/freshness_progress.log`
+  - 超时后脚本返回非 0
 - 进度输出按时间间隔控制，不再按每个批次输出
 - 当达到 `--print-interval` 指定的秒数间隔时，输出当前表名、累计导入行数和已耗时
 - 导入结束后，输出当前表名、最终总导入行数和总耗时

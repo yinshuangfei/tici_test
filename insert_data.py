@@ -25,6 +25,13 @@ DEFAULT_PROGRESS_INTERVAL = 3.0
 DEFAULT_INSERT_RETRY_COUNT = 10
 DEFAULT_INSERT_RETRY_INTERVAL = 1.0
 DEFAULT_CSV_FILE = "data/hdfs-logs-multitenants.csv"
+DEFAULT_FRESHNESS_TIMEOUT = 30 * 60.0
+DEFAULT_FRESHNESS_POLL_INTERVAL = 5.0
+DEFAULT_FRESHNESS_WHERE = "where fts_match_word('china',body) or not fts_match_word('china',body)"
+DEFAULT_FRESHNESS_PROGRESS_LOG = Path("log/freshness_progress.log")
+DEFAULT_FRESHNESS_RESULT_LOG = Path("log/freshness_result.log")
+DEFAULT_INSERT_RESULT_LOG = Path("log/insert_result.log")
+DEFAULT_INSERT_ERROR_LOG = Path("log/insert_error.log")
 
 
 def quote_identifier(identifier: str) -> str:
@@ -145,6 +152,32 @@ def build_insert_statement(database: str, table: str) -> str:
     return f"INSERT INTO {target} ({columns}) VALUES ({placeholders})"
 
 
+def build_count_sql(database: str, table: str) -> str:
+    target = f"{quote_identifier(database)}.{quote_identifier(table)}"
+    return f"SELECT COUNT(*) FROM {target} {DEFAULT_FRESHNESS_WHERE}"
+
+
+def append_progress_log(output_file: Path, message: str) -> None:
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    with output_file.open("a", encoding="utf-8") as handle:
+        handle.write(f"[{timestamp}] {message}\n")
+
+
+def emit_log(message: str, *, output_file: Optional[Path] = None, stderr: bool = False) -> None:
+    if stderr:
+        print(message, file=sys.stderr)
+    else:
+        print(message)
+    if output_file is not None:
+        append_progress_log(output_file, message)
+
+
+def build_tikv_count_sql(database: str, table: str) -> str:
+    target = f"{quote_identifier(database)}.{quote_identifier(table)}"
+    return f"SELECT COUNT(*) FROM {target}"
+
+
 def reconnect_client(
     client: MySQLClient,
     connection: Optional[mysql.connector.MySQLConnection],
@@ -157,6 +190,22 @@ def reconnect_client(
     connection = client.connect()
     cursor = connection.cursor()
     return connection, cursor
+
+
+def fetch_table_row_count(cursor, database: str, table: str) -> int:
+    cursor.execute(build_count_sql(database, table))
+    row = cursor.fetchone()
+    if row is None:
+        raise ValueError(f"failed to query row count for {format_table_target(database, table)}")
+    return int(row[0])
+
+
+def fetch_tikv_table_row_count(cursor, database: str, table: str) -> int:
+    cursor.execute(build_tikv_count_sql(database, table))
+    row = cursor.fetchone()
+    if row is None:
+        raise ValueError(f"failed to query row count for {format_table_target(database, table)}")
+    return int(row[0])
 
 
 def add_insert_data_args(parser: argparse.ArgumentParser, *, csv_file_nargs: str = "?") -> None:
@@ -188,6 +237,15 @@ def add_insert_data_args(parser: argparse.ArgumentParser, *, csv_file_nargs: str
     parser.add_argument("--encoding", default="utf-8", help="CSV file encoding, default: utf-8")
     parser.add_argument("--delimiter", default=",", help=r"CSV delimiter, default: ','; use '\t' for tab")
     parser.add_argument("--has-header", action="store_true", help="Skip the first CSV row as header")
+    parser.add_argument(
+        "--freshness",
+        action="store_true",
+        help=(
+            "Poll table row count every "
+            f"{int(DEFAULT_FRESHNESS_POLL_INTERVAL)} seconds after insert until it reflects imported rows "
+            f"or {int(DEFAULT_FRESHNESS_TIMEOUT // 60)} minutes timeout"
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print SQL only, do not execute")
 
 
@@ -236,10 +294,13 @@ def run_insert_data_for_table(args: argparse.Namespace) -> int:
     last_progress_at = started_at
     connection = None
     cursor = None
+    baseline_row_count = 0
     try:
         if not args.dry_run:
             connection = client.connect()
             cursor = connection.cursor()
+            if args.freshness:
+                baseline_row_count = fetch_tikv_table_row_count(cursor, args.database, args.table)
 
         for batch in batches:
             sql = build_insert_sql(args.database, args.table, batch)
@@ -258,16 +319,18 @@ def run_insert_data_for_table(args: argparse.Namespace) -> int:
                             pass
 
                         if attempt == DEFAULT_INSERT_RETRY_COUNT:
-                            print(f"[{target_name}] [FATAL ERROR] insert batch failed attempt={attempt}/{DEFAULT_INSERT_RETRY_COUNT} "
-                                  f"rows={len(batch)} error={exc}",
-                                  file=sys.stderr)
+                            message = (
+                                f"[{target_name}] [FATAL ERROR] insert batch failed "
+                                f"attempt={attempt}/{DEFAULT_INSERT_RETRY_COUNT} rows={len(batch)} error={exc}"
+                            )
+                            emit_log(message, output_file=DEFAULT_INSERT_ERROR_LOG, stderr=True)
                             raise
 
-                        print(
+                        message = (
                             f"[{target_name}] insert batch failed attempt={attempt}/{DEFAULT_INSERT_RETRY_COUNT} "
-                            f"rows={len(batch)} retry_in={DEFAULT_INSERT_RETRY_INTERVAL:.1f}s error={exc}",
-                            file=sys.stderr,
+                            f"rows={len(batch)} retry_in={DEFAULT_INSERT_RETRY_INTERVAL:.1f}s error={exc}"
                         )
+                        emit_log(message, output_file=DEFAULT_INSERT_ERROR_LOG, stderr=True)
                         time.sleep(DEFAULT_INSERT_RETRY_INTERVAL)
                         connection, cursor = reconnect_client(client, connection, cursor)
             imported_rows += len(batch)
@@ -287,7 +350,54 @@ def run_insert_data_for_table(args: argparse.Namespace) -> int:
         return 0
 
     elapsed = time.monotonic() - started_at
-    print(f"[{target_name}] completed import {imported_rows} rows in {elapsed:.1f}s")
+    completed_message = f"[{target_name}] completed import {imported_rows} rows in {elapsed:.1f}s"
+    emit_log(completed_message, output_file=DEFAULT_INSERT_RESULT_LOG)
+
+    if args.freshness and not args.dry_run:
+        freshness_started_at = time.monotonic()
+        connection = client.connect()
+        cursor = connection.cursor()
+        try:
+            expected_row_count = baseline_row_count + imported_rows
+            append_progress_log(
+                DEFAULT_FRESHNESS_PROGRESS_LOG,
+                f"[{target_name}] freshness start baseline_row_count={baseline_row_count} "
+                f"imported_rows={imported_rows} expected_total_rows={expected_row_count}"
+            )
+            while True:
+                current_row_count = fetch_table_row_count(cursor, args.database, args.table)
+                replicated_rows = current_row_count - baseline_row_count
+                freshness_elapsed = time.monotonic() - freshness_started_at
+                append_progress_log(
+                    DEFAULT_FRESHNESS_PROGRESS_LOG,
+                    f"[{target_name}] freshness poll elapsed={freshness_elapsed:.1f}s "
+                    f"baseline_row_count={baseline_row_count} imported_rows={imported_rows} "
+                    f"visible_rows={replicated_rows} total_rows={current_row_count}"
+                )
+                if current_row_count == expected_row_count:
+                    message = (
+                        f"[{target_name}] freshness reached elapsed={freshness_elapsed:.1f}s "
+                        f"baseline_row_count={baseline_row_count} imported_rows={imported_rows} "
+                        f"visible_rows={replicated_rows} total_rows={current_row_count}"
+                    )
+                    emit_log(message, output_file=DEFAULT_FRESHNESS_RESULT_LOG)
+                    break
+
+                if freshness_elapsed >= DEFAULT_FRESHNESS_TIMEOUT:
+                    message = (
+                        f"[{target_name}] freshness timeout elapsed={freshness_elapsed:.1f}s "
+                        f"baseline_row_count={baseline_row_count} imported_rows={imported_rows} "
+                        f"visible_rows={replicated_rows} total_rows={current_row_count} "
+                        f"timeout={DEFAULT_FRESHNESS_TIMEOUT:.0f}s"
+                    )
+                    emit_log(message, output_file=DEFAULT_FRESHNESS_RESULT_LOG, stderr=True)
+                    return 1
+
+                time.sleep(DEFAULT_FRESHNESS_POLL_INTERVAL)
+        finally:
+            cursor.close()
+            connection.close()
+
     return 0
 
 
