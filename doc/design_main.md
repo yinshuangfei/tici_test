@@ -117,13 +117,13 @@ select count(*) from test.hdfs_log where fts_match_word('china',body) or not fts
 - `auto` 的数据导入阶段通过 Python `mysql.connector` 库执行批量插入
 - `auto` 导入阶段的 `completed import` 日志会追加写入当前目录下的 `log/insert_result.log`
 - `auto` 导入阶段的插入重试日志和最终失败日志会追加写入当前目录下的 `log/insert_error.log`
-- `auto` 支持 `--freshness` 参数，并透传给导入阶段
-- 当 `auto --freshness` 指定时，导入阶段会在插入完成后每隔 5 秒执行
+- `auto` 默认开启 freshness 检查；支持通过 `--no-freshness` 参数显式关闭，并透传给导入阶段
+- 当 `auto` 未指定 `--no-freshness` 时，导入阶段会在插入完成后每隔 5 秒执行
 ```
 SELECT COUNT(*) FROM <table> WHERE fts_match_word('china',body) OR NOT fts_match_word('china',body);
 ```
 - 当查询结果减去导入前基线值等于本次导入行数时，视为数据可见；否则持续轮询直到达到 30 分钟超时
-- `auto --freshness` 的轮询过程同样会追加写入当前目录下的 `log/freshness_progress.log`
+- 默认开启的 freshness 轮询过程同样会追加写入当前目录下的 `log/freshness_progress.log`
 - 当 `--count > 1` 时，`auto` 会对每一张目标表依次执行建表、加索引、导入数据的相同流程
 - `auto` 中的建表和加索引阶段复用 `run_sqls` 的多线程逻辑
 - `auto` 中的建表和加索引按阶段执行：先完成所有表的建表，再开始所有表的加索引

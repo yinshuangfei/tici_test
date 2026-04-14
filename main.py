@@ -445,14 +445,16 @@ def add_insert_runtime_args(
     parser.add_argument("--delimiter", default=",", help=r"CSV delimiter, default: ','; use '\t' for tab")
     parser.add_argument("--has-header", action="store_true", help="Skip the first CSV row as header")
     parser.add_argument(
-        "--freshness",
-        action="store_true",
+        "--no-freshness",
+        dest="freshness",
+        action="store_false",
         help=(
-            "Poll table row count every "
-            f"{int(insert_data.DEFAULT_FRESHNESS_POLL_INTERVAL)} seconds after insert until it reflects imported rows "
-            f"or {int(insert_data.DEFAULT_FRESHNESS_TIMEOUT // 60)} minutes timeout"
+            "Disable the default post-insert freshness check "
+            f"that polls every {int(insert_data.DEFAULT_FRESHNESS_POLL_INTERVAL)} seconds for up to "
+            f"{int(insert_data.DEFAULT_FRESHNESS_TIMEOUT // 60)} minutes"
         ),
     )
+    parser.set_defaults(freshness=True)
 
 
 def build_parser() -> argparse.ArgumentParser:

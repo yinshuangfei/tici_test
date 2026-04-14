@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS test.hdfs_log (
   - `--encoding`，默认 `utf-8`
   - `--delimiter`，默认 `,`
   - `--has-header`，指定后跳过首行表头
-  - `--freshness`，指定后在导入完成后轮询查询当前表行数，直到本次导入数据全部可见或超时
+  - `--no-freshness`，显式关闭默认开启的 freshness 检查
   - `--dry-run`，只输出 SQL，不真正执行
 - CSV 默认按以下列顺序读取：
 ```
@@ -78,8 +78,8 @@ INSERT INTO test.hdfs_log (`timestamp`, `severity_text`, `body`, `tenant_id`) VA
 - 当单批次插入失败时，程序会对该批次最多重试 10 次，每次重试前等待 1 秒，并重新建立数据库连接
 - 插入重试日志和最终失败日志除了输出到标准错误外，还会追加写入当前目录下的 `log/insert_error.log`
 - 导入结束后的 `completed import` 日志除了输出到标准输出外，还会追加写入当前目录下的 `log/insert_result.log`
-- 当 `--freshness` 指定时，程序会在导入前先查询一次当前目标表总行数，记为基线值
-- 导入结束后，如果 `--freshness` 指定，则循环执行：
+- 默认开启 freshness 检查；当未指定 `--no-freshness` 时，程序会在导入前先查询一次当前目标表总行数，记为基线值
+- 导入结束后，如果未指定 `--no-freshness`，则循环执行：
 ```
 SELECT COUNT(*) FROM <table> WHERE fts_match_word('china',body) OR NOT fts_match_word('china',body);
 ```
