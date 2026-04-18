@@ -86,7 +86,7 @@ SELECT COUNT(*) FROM <table> WHERE fts_match_word('china',body) OR NOT fts_match
   - 当当前总行数减去基线值等于本次成功导入行数时，视为 freshness 达成
   - 轮询超时时间固定为 30 分钟
   - 轮询间隔固定为 5 秒
-  - 每次 freshness 查询的开始、轮询结果和最终状态都会追加写入当前目录下的 `log/freshness_progress.log`
+  - 每次 freshness 查询的开始、轮询结果和最终状态都会写入当前目录下带时间后缀的 freshness 日志文件，例如 `log/freshness_progress_YYYYMMDD_HHMMSS.log` 和 `log/freshness_result_YYYYMMDD_HHMMSS.log`
   - 超时后脚本返回非 0
 - 进度输出按时间间隔控制，不再按每个批次输出
 - 当达到 `--print-interval` 指定的秒数间隔时，输出当前表名、累计导入行数和已耗时

@@ -123,7 +123,7 @@ select count(*) from test.hdfs_log where fts_match_word('china',body) or not fts
 SELECT COUNT(*) FROM <table> WHERE fts_match_word('china',body) OR NOT fts_match_word('china',body);
 ```
 - 当查询结果减去导入前基线值等于本次导入行数时，视为数据可见；否则持续轮询直到达到 30 分钟超时
-- 默认开启的 freshness 轮询过程同样会追加写入当前目录下的 `log/freshness_progress.log`
+- 默认开启的 freshness 日志会写入当前目录下带时间后缀的文件，例如 `log/freshness_progress_YYYYMMDD_HHMMSS.log` 和 `log/freshness_result_YYYYMMDD_HHMMSS.log`
 - 当 `--count > 1` 时，`auto` 会对每一张目标表依次执行建表、加索引、导入数据的相同流程
 - `auto` 中的建表和加索引阶段复用 `run_sqls` 的多线程逻辑
 - `auto` 中的建表和加索引按阶段执行：先完成所有表的建表，再开始所有表的加索引

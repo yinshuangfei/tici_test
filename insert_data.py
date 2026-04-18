@@ -28,10 +28,23 @@ DEFAULT_CSV_FILE = "data/hdfs-logs-multitenants.csv"
 DEFAULT_FRESHNESS_TIMEOUT = 30 * 60.0
 DEFAULT_FRESHNESS_POLL_INTERVAL = 5.0
 DEFAULT_FRESHNESS_WHERE = "where fts_match_word('china',body) or not fts_match_word('china',body)"
-DEFAULT_FRESHNESS_PROGRESS_LOG = Path("log/freshness_progress.log")
-DEFAULT_FRESHNESS_RESULT_LOG = Path("log/freshness_result.log")
 DEFAULT_INSERT_RESULT_LOG = Path("log/insert_result.log")
 DEFAULT_INSERT_ERROR_LOG = Path("log/insert_error.log")
+FRESHNESS_LOG_SUFFIX = time.strftime("%Y%m%d_%H%M%S")
+
+
+def with_timestamp_suffix(path: Path, suffix: str) -> Path:
+    return path.with_name(f"{path.stem}_{suffix}{path.suffix}")
+
+
+DEFAULT_FRESHNESS_PROGRESS_LOG = with_timestamp_suffix(
+    Path("log/freshness_progress.log"),
+    FRESHNESS_LOG_SUFFIX,
+)
+DEFAULT_FRESHNESS_RESULT_LOG = with_timestamp_suffix(
+    Path("log/freshness_result.log"),
+    FRESHNESS_LOG_SUFFIX,
+)
 
 
 def quote_identifier(identifier: str) -> str:

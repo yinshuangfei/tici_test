@@ -70,7 +70,7 @@ It reads and inserts data batch by batch through the Python `mysql.connector` li
 If `csv_file` is omitted, it uses `data/hdfs-logs-multitenants.csv`.
 When `--count > 1`, target tables follow the `<table>_<num>` naming rule. Multi-table execution runs in parallel unless `--dry-run` is used.
 Each `completed import` line is also appended to `log/insert_result.log` under the current working directory. Insert retry and fatal insert failure messages are also appended to `log/insert_error.log`.
-Freshness is enabled by default. Unless `--no-freshness` is specified, the script records the target table row count before inserting, then polls `select count(*) from <table> where fts_match_word('china',body) or not fts_match_word('china',body);` every `5` seconds after the import until the visible newly inserted row count matches the imported row count, or until a fixed `30` minute timeout is reached. The full freshness polling process is appended to `log/freshness_progress.log` under the current working directory.
+Freshness is enabled by default. Unless `--no-freshness` is specified, the script records the target table row count before inserting, then polls `select count(*) from <table> where fts_match_word('china',body) or not fts_match_word('china',body);` every `5` seconds after the import until the visible newly inserted row count matches the imported row count, or until a fixed `30` minute timeout is reached. The freshness logs are written to timestamp-suffixed files such as `log/freshness_progress_YYYYMMDD_HHMMSS.log` and `log/freshness_result_YYYYMMDD_HHMMSS.log` under the current working directory.
 
 Examples:
 
