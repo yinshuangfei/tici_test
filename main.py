@@ -436,6 +436,15 @@ def add_insert_runtime_args(
         help=f"Maximum number of data rows to import, default: {default_row_limit}",
     )
     parser.add_argument(
+        "--freshness-batch",
+        type=int,
+        default=insert_data.DEFAULT_FRESHNESS_BATCH,
+        help=(
+            "Split row-limit into sequential batches for each insert/freshness round, "
+            f"default: {insert_data.DEFAULT_FRESHNESS_BATCH}"
+        ),
+    )
+    parser.add_argument(
         "--print-interval",
         type=float,
         default=insert_data.DEFAULT_PROGRESS_INTERVAL,
@@ -597,9 +606,10 @@ def build_insert_namespace(args: argparse.Namespace) -> argparse.Namespace:
         password=args.password,
         database=args.database,
         table=args.table,
-        count=1,
+        count=getattr(args, "count", 1),
         batch_size=args.batch_size,
         row_limit=args.row_limit,
+        freshness_batch=args.freshness_batch,
         print_interval=args.print_interval,
         encoding=args.encoding,
         delimiter=args.delimiter,
@@ -609,41 +619,9 @@ def build_insert_namespace(args: argparse.Namespace) -> argparse.Namespace:
     )
 
 
-def build_insert_namespace_for_table(args: argparse.Namespace, table_name: str) -> argparse.Namespace:
-    insert_args = build_insert_namespace(args)
-    insert_args.table = table_name
-    return insert_args
-
-
-def run_auto_insert_for_table(args: argparse.Namespace, table_name: str) -> int:
-    print(f"[insert-data] target={format_table_target(args.database, table_name)}")
-    return insert_data.run_insert_data(build_insert_namespace_for_table(args, table_name))
-
-
 def run_auto_inserts(args: argparse.Namespace, table_names: Sequence[str]) -> int:
-    if args.dry_run or len(table_names) <= 1:
-        for table_name in table_names:
-            exit_code = run_auto_insert_for_table(args, table_name)
-            if exit_code != 0:
-                return exit_code
-        return 0
-
-    print(f"[auto] insert-data threads={len(table_names)}")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(table_names)) as executor:
-        future_map = {
-            executor.submit(run_auto_insert_for_table, args, table_name): table_name for table_name in table_names
-        }
-        for future in concurrent.futures.as_completed(future_map):
-            table_name = future_map[future]
-            exit_code = future.result()
-            if exit_code != 0:
-                print(
-                    f"[auto] insert-data failed target={format_table_target(args.database, table_name)} "
-                    f"exit_code={exit_code}",
-                    file=sys.stderr,
-                )
-                return exit_code
-    return 0
+    del table_names
+    return insert_data.run_insert_data(build_insert_namespace(args))
 
 
 def build_auto_create_sqls(args: argparse.Namespace, table_names: Sequence[str]) -> List[Tuple[str, str, str, Optional[str]]]:

@@ -21,29 +21,37 @@ DEFAULT_TABLE = "hdfs_log"
 DEFAULT_COLUMNS = ("timestamp", "severity_text", "body", "tenant_id")
 DEFAULT_BATCH_SIZE = 1000
 DEFAULT_ROW_LIMIT = 100000
+DEFAULT_FRESHNESS_BATCH = 10000
 DEFAULT_PROGRESS_INTERVAL = 3.0
 DEFAULT_INSERT_RETRY_COUNT = 10
 DEFAULT_INSERT_RETRY_INTERVAL = 1.0
 DEFAULT_CSV_FILE = "data/hdfs-logs-multitenants.csv"
 DEFAULT_FRESHNESS_TIMEOUT = 30 * 60.0
 DEFAULT_FRESHNESS_POLL_INTERVAL = 5.0
+DEFAULT_FRESHNESS_PROGRESS_INTERVAL = 60.0
 DEFAULT_FRESHNESS_WHERE = "where fts_match_word('china',body) or not fts_match_word('china',body)"
-DEFAULT_INSERT_RESULT_LOG = Path("log/insert_result.log")
-DEFAULT_INSERT_ERROR_LOG = Path("log/insert_error.log")
-FRESHNESS_LOG_SUFFIX = time.strftime("%Y%m%d_%H%M%S")
+DATE_LOG_SUFFIX = time.strftime("%Y%m%d_%H%M%S")
 
 
 def with_timestamp_suffix(path: Path, suffix: str) -> Path:
     return path.with_name(f"{path.stem}_{suffix}{path.suffix}")
 
 
+DEFAULT_INSERT_RESULT_LOG = with_timestamp_suffix(
+    Path("log/insert_result.log"),
+    DATE_LOG_SUFFIX,
+)
+DEFAULT_INSERT_ERROR_LOG = with_timestamp_suffix(
+    Path("log/insert_error.log"),
+    DATE_LOG_SUFFIX,
+)
 DEFAULT_FRESHNESS_PROGRESS_LOG = with_timestamp_suffix(
     Path("log/freshness_progress.log"),
-    FRESHNESS_LOG_SUFFIX,
+    DATE_LOG_SUFFIX,
 )
 DEFAULT_FRESHNESS_RESULT_LOG = with_timestamp_suffix(
     Path("log/freshness_result.log"),
-    FRESHNESS_LOG_SUFFIX,
+    DATE_LOG_SUFFIX,
 )
 
 
@@ -116,6 +124,7 @@ def read_csv_batches(
     encoding: str,
     delimiter: str,
     has_header: bool,
+    row_offset: int,
     row_limit: int,
     batch_size: int,
 ) -> Iterator[List[Tuple[int, str, str, int]]]:
@@ -126,12 +135,16 @@ def read_csv_batches(
             if header is None:
                 return
         start_line = 2 if has_header else 1
+        skipped = 0
         emitted = 0
         batch: List[Tuple[int, str, str, int]] = []
         for offset, row in enumerate(reader, start=start_line):
             if row_limit > 0 and emitted >= row_limit:
                 break
             if not row:
+                continue
+            if skipped < row_offset:
+                skipped += 1
                 continue
             batch.append(parse_row(row, offset))
             emitted += 1
@@ -242,6 +255,15 @@ def add_insert_data_args(parser: argparse.ArgumentParser, *, csv_file_nargs: str
         help=f"Maximum number of data rows to import, default: {DEFAULT_ROW_LIMIT}",
     )
     parser.add_argument(
+        "--freshness-batch",
+        type=int,
+        default=DEFAULT_FRESHNESS_BATCH,
+        help=(
+            "Split row-limit into sequential batches for each insert/freshness round, "
+            f"default: {DEFAULT_FRESHNESS_BATCH}"
+        ),
+    )
+    parser.add_argument(
         "--print-interval",
         type=float,
         default=DEFAULT_PROGRESS_INTERVAL,
@@ -291,6 +313,21 @@ def build_table_insert_args(args: argparse.Namespace, table_name: str) -> argpar
     return table_args
 
 
+def build_row_window_args(args: argparse.Namespace, *, row_offset: int, row_limit: int) -> argparse.Namespace:
+    window_args = argparse.Namespace(**vars(args))
+    window_args.row_offset = row_offset
+    window_args.row_limit = row_limit
+    return window_args
+
+
+def iter_row_windows(row_limit: int, freshness_batch: int) -> Iterator[Tuple[int, int]]:
+    row_offset = 0
+    while row_offset < row_limit:
+        current_limit = min(freshness_batch, row_limit - row_offset)
+        yield row_offset, current_limit
+        row_offset += current_limit
+
+
 def run_insert_data_for_table(args: argparse.Namespace) -> int:
     csv_path = Path(getattr(args, "csv_file", None) or DEFAULT_CSV_FILE)
     target_name = format_table_target(args.database, args.table)
@@ -299,6 +336,7 @@ def run_insert_data_for_table(args: argparse.Namespace) -> int:
         encoding=args.encoding,
         delimiter=normalize_delimiter(args.delimiter),
         has_header=args.has_header,
+        row_offset=getattr(args, "row_offset", 0),
         row_limit=args.row_limit,
         batch_size=args.batch_size,
     )
@@ -327,6 +365,7 @@ def run_insert_data_for_table(args: argparse.Namespace) -> int:
                         cursor.executemany(insert_statement, batch)
                         connection.commit()
                         break
+                    # insert failed, retry
                     except mysql.connector.Error as exc:
                         try:
                             connection.rollback()
@@ -368,27 +407,35 @@ def run_insert_data_for_table(args: argparse.Namespace) -> int:
     completed_message = f"[{target_name}] completed import {imported_rows} rows in {elapsed:.1f}s"
     emit_log(completed_message, output_file=DEFAULT_INSERT_RESULT_LOG)
 
+    # check freshness
     if args.freshness and not args.dry_run:
         freshness_started_at = time.monotonic()
+        next_progress_log_at = DEFAULT_FRESHNESS_PROGRESS_INTERVAL
         connection = client.connect()
         cursor = connection.cursor()
         try:
             expected_row_count = baseline_row_count + imported_rows
-            append_progress_log(
-                DEFAULT_FRESHNESS_PROGRESS_LOG,
+            message = (
                 f"[{target_name}] freshness start baseline_row_count={baseline_row_count} "
                 f"imported_rows={imported_rows} expected_total_rows={expected_row_count}"
             )
+            emit_log(message, output_file=DEFAULT_FRESHNESS_PROGRESS_LOG)
+
             while True:
                 current_row_count = fetch_table_row_count(cursor, args.database, args.table)
                 replicated_rows = current_row_count - baseline_row_count
                 freshness_elapsed = time.monotonic() - freshness_started_at
-                append_progress_log(
-                    DEFAULT_FRESHNESS_PROGRESS_LOG,
-                    f"[{target_name}] freshness poll elapsed={freshness_elapsed:.1f}s "
-                    f"baseline_row_count={baseline_row_count} imported_rows={imported_rows} "
-                    f"visible_rows={replicated_rows} total_rows={current_row_count}"
-                )
+
+                # log progress every DEFAULT_FRESHNESS_PROGRESS_INTERVAL seconds
+                if freshness_elapsed >= next_progress_log_at:
+                    message = (
+                        f"[{target_name}] freshness poll elapsed={freshness_elapsed:.1f}s "
+                        f"baseline_row_count={baseline_row_count} imported_rows={imported_rows} "
+                        f"visible_rows={replicated_rows} total_rows={current_row_count}"
+                    )
+                    emit_log(message, output_file=DEFAULT_FRESHNESS_PROGRESS_LOG)
+                    next_progress_log_at += DEFAULT_FRESHNESS_PROGRESS_INTERVAL
+
                 if current_row_count == expected_row_count:
                     message = (
                         f"[{target_name}] freshness reached elapsed={freshness_elapsed:.1f}s "
@@ -420,11 +467,17 @@ def run_insert_data(args: argparse.Namespace, parser: Optional[argparse.Argument
     if args.batch_size < 1:
         print("batch size must be >= 1", file=sys.stderr)
         return 2
+    if args.freshness_batch < 1:
+        print("freshness batch must be >= 1", file=sys.stderr)
+        return 2
     if args.count < 1:
         print("table count must be >= 1", file=sys.stderr)
         return 2
     if args.row_limit < 0:
         print("row limit must be >= 0", file=sys.stderr)
+        return 2
+    if args.row_limit > 0 and args.freshness_batch > args.row_limit:
+        print("freshness batch must be <= row limit", file=sys.stderr)
         return 2
     if args.print_interval < 0:
         print("print interval must be >= 0", file=sys.stderr)
@@ -436,35 +489,49 @@ def run_insert_data(args: argparse.Namespace, parser: Optional[argparse.Argument
         return 2
 
     try:
+        row_windows = list(iter_row_windows(args.row_limit, args.freshness_batch)) if args.row_limit > 0 else [(0, 0)]
         table_names = build_table_names(args.table, args.count)
+
+        # print table names
         if len(table_names) > 1:
             joined_targets = ", ".join(format_table_target(args.database, table_name) for table_name in table_names)
             mode = "dry-run" if args.dry_run else "execute"
             print(f"[insert-data] mode={mode} tables={joined_targets}")
 
-        if args.dry_run or len(table_names) == 1:
-            for table_name in table_names:
-                exit_code = run_insert_data_for_table(build_table_insert_args(args, table_name))
-                if exit_code != 0:
-                    return exit_code
-            return 0
+        # iterate row windows
+        for batch_index, (row_offset, row_limit) in enumerate(row_windows, start=1):
+            if len(row_windows) > 1:
+                print(
+                    f"[insert-data] freshness-batch {batch_index}/{len(row_windows)} "
+                    f"row_offset={row_offset} row_limit={row_limit}"
+                )
 
-        print(f"[insert-data] threads={len(table_names)}")
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(table_names)) as executor:
-            future_map = {
-                executor.submit(run_insert_data_for_table, build_table_insert_args(args, table_name)): table_name
-                for table_name in table_names
-            }
-            for future in concurrent.futures.as_completed(future_map):
-                table_name = future_map[future]
-                exit_code = future.result()
-                if exit_code != 0:
-                    print(
-                        f"[insert-data] failed target={format_table_target(args.database, table_name)} "
-                        f"exit_code={exit_code}",
-                        file=sys.stderr,
-                    )
-                    return exit_code
+            batch_args = build_row_window_args(args, row_offset=row_offset, row_limit=row_limit)
+            if batch_args.dry_run or len(table_names) == 1:
+                for table_name in table_names:
+                    exit_code = run_insert_data_for_table(build_table_insert_args(batch_args, table_name))
+                    if exit_code != 0:
+                        return exit_code
+                continue
+
+            # insert in threads
+            print(f"[insert-data] threads={len(table_names)}")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(table_names)) as executor:
+                future_map = {
+                    executor.submit(run_insert_data_for_table, build_table_insert_args(batch_args, table_name)): table_name
+                    for table_name in table_names
+                }
+                # wait for all threads to complete
+                for future in concurrent.futures.as_completed(future_map):
+                    table_name = future_map[future]
+                    exit_code = future.result()
+                    if exit_code != 0:
+                        print(
+                            f"[insert-data] failed target={format_table_target(args.database, table_name)} "
+                            f"exit_code={exit_code}",
+                            file=sys.stderr,
+                        )
+                        return exit_code
         return 0
     except mysql.connector.Error as exc:
         print(f"database operation failed: {exc}", file=sys.stderr)
