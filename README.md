@@ -83,6 +83,21 @@ python insert_data.py data/hdfs-logs-multitenants.csv --batch-size 1000 --row-li
 python insert_data.py data/hdfs-logs-multitenants.csv --no-freshness
 ```
 
+## freshness.py
+
+`freshness.py` provides a bounded concurrency freshness polling module.
+It creates an internal thread pool with a configurable size. The default pool size is `10`. New tasks are rejected immediately when all worker slots are already occupied, so excess tasks are not queued.
+Each task accepts a target row count, MySQL connection info, database and table name, polling interval, and timeout. It repeatedly executes `select count(*) from <table> where fts_match_word('china',body) or not fts_match_word('china',body);` until the current row count reaches the target row count or the task times out.
+Polling progress is appended to timestamp-suffixed files such as `log/freshness_progress_YYYYMMDD_HHMMSS.log`, and final results are appended to files such as `log/freshness_result_YYYYMMDD_HHMMSS.log`.
+
+Example:
+
+```bash
+python freshness.py 100000
+python freshness.py 100000 --database test --table hdfs_log --poll-interval 5 --timeout 1800
+python freshness.py 100000 --host 127.0.0.1 --port 4000 --user root --password '' --max-workers 1
+```
+
 ## tici.py
 
 `tici.py` queries TiCI metadata from `tici.tici_shard_meta`.
