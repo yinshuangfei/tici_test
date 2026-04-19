@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS test.hdfs_log (
   - `--database`，默认 `test`
   - `--table`，默认 `hdfs_log`
   - `--count`，默认 `1`
+  - `--table-offset`，默认 `0`，控制生成表名后缀的起始偏移
   - `--batch-size`，默认 `1000`
   - `--row-limit`，默认 `100000`
   - `--print-interval`，默认 `3`，表示每隔多少秒输出一次进度
@@ -52,14 +53,15 @@ timestamp,severity_text,body,tenant_id
 - 当 `--has-header` 未指定时，每一行都按固定 4 列解析
 - 当 `--has-header` 指定时，跳过第一行，从第二行开始按固定 4 列解析
 - 当 `--row-limit > 0` 时，只读取前 N 条有效数据行并导入
-- 当 `--count > 1` 时，表名命名规则为 `hdfs_log_<num>`，例如 `hdfs_log_1`、`hdfs_log_2`
+- 当 `--count > 1` 或 `--table-offset > 0` 时，表名命名规则为 `hdfs_log_<num>`
+- 后缀编号从 `--table-offset + 1` 开始，例如 `--count 2 --table-offset 3` 会生成 `hdfs_log_4`、`hdfs_log_5`
 - 程序按单批次插入方式执行：
   - 每次从 CSV 中读取 `--batch-size` 条数据，默认 1000 条
   - 为这一批数据构建一条 `INSERT INTO ... VALUES (...)` SQL 供 `--dry-run` 输出
   - 执行完成后继续从上次读取偏移处处理下一批
   - 直到达到 `--row-limit` 指定的上限，或者文件读取结束
-- 当 `--count > 1` 时，会对每一张目标表执行相同的导入流程
-- 当 `--count > 1` 且不是 `--dry-run` 时，多表导入按目标表使用多线程并行执行
+- 当目标表数量大于 1 时，会对每一张目标表执行相同的导入流程
+- 当目标表数量大于 1 且不是 `--dry-run` 时，多表导入按目标表使用多线程并行执行
 - 当 `--dry-run` 时，多表导入保持串行输出，避免多线程打乱 SQL 文本显示
 - 对每一行做基础校验：
   - 列数必须为 4
@@ -88,6 +90,7 @@ SELECT COUNT(*) FROM <table> WHERE fts_match_word('china',body) OR NOT fts_match
   - 轮询间隔固定为 5 秒
   - 每次 freshness 查询的开始、轮询结果和最终状态都会写入当前目录下带时间后缀的 freshness 日志文件，例如 `log/freshness_progress_YYYYMMDD_HHMMSS.log` 和 `log/freshness_result_YYYYMMDD_HHMMSS.log`
   - 超时后脚本返回非 0
+- 当指定 `--no-freshness` 时，不执行 freshness 流程，也不检查 `--freshness-batch <= --row-limit` 这条约束
 - 进度输出按时间间隔控制，不再按每个批次输出
 - 当达到 `--print-interval` 指定的秒数间隔时，输出当前表名、累计导入行数和已耗时
 - 导入结束后，输出当前表名、最终总导入行数和总耗时

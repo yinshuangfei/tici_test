@@ -30,7 +30,9 @@
 ### 创建表
 - 支持输入数据库表的名称，默认名称为 hdfs_log
 - 支持输入数据库表的数量，默认数量为 1
-- 当数量大于 1 时，数据库的表名命名规则为 hdfs_log_<num>
+- 支持通过 `--table-offset` 控制生成表名后缀的起始偏移，默认 `0`
+- 当 `--count > 1` 或 `--table-offset > 0` 时，数据库的表名命名规则为 `hdfs_log_<num>`
+- 后缀编号从 `--table-offset + 1` 开始
 - 当表数量大于 1 且不是 `--dry-run` 时，`create-table` 按目标表使用多线程并行执行
 - 表的内容如下：
 ```
@@ -74,7 +76,9 @@ select count(*) from test.hdfs_log where fts_match_word('china',body) or not fts
 ```
 - `query` 支持 `--table` 指定基础表名，默认 `hdfs_log`
 - `query` 支持 `--count` 指定目标表数量，默认 `1`
-- 当 `--count > 1` 时，表名命名规则为 `hdfs_log_<num>`，例如 `hdfs_log_1`、`hdfs_log_2`
+- `query` 支持 `--table-offset` 指定表名后缀起始偏移，默认 `0`
+- 当 `--count > 1` 或 `--table-offset > 0` 时，表名命名规则为 `hdfs_log_<num>`
+- 后缀编号从 `--table-offset + 1` 开始，例如 `--count 2 --table-offset 3` 会生成 `hdfs_log_4`、`hdfs_log_5`
 - 默认查询语句会根据目标表自动替换表名
 - 支持通过 `--sql` 传入自定义查询语句
 - 当自定义 SQL 中包含 `{table}` 时，执行时会替换为当前目标表的 `database.table`
@@ -91,7 +95,9 @@ select count(*) from test.hdfs_log where fts_match_word('china',body) or not fts
 ```
 - `check` 支持 `--table` 指定基础表名，默认 `hdfs_log`
 - `check` 支持 `--count` 指定目标表数量，默认 `1`
-- 当 `--count > 1` 时，表名命名规则为 `hdfs_log_<num>`，例如 `hdfs_log_1`、`hdfs_log_2`
+- `check` 支持 `--table-offset` 指定表名后缀起始偏移，默认 `0`
+- 当 `--count > 1` 或 `--table-offset > 0` 时，表名命名规则为 `hdfs_log_<num>`
+- 后缀编号从 `--table-offset + 1` 开始，例如 `--count 2 --table-offset 3` 会生成 `hdfs_log_4`、`hdfs_log_5`
 - `check` 支持通过 `--sql` 指定普通查询侧使用的 SQL
 - 当自定义 SQL 中包含 `{table}` 时，执行时会替换为当前目标表的 `database.table`
 - `check` 的 TiKV 对照侧固定使用 `select '<idx>' as table_idx,count(*) from <table_name>;`
@@ -108,7 +114,9 @@ select count(*) from test.hdfs_log where fts_match_word('china',body) or not fts
   - 从 csv 中导入数据
 - `auto` 默认表名为 `hdfs_log`
 - `auto` 默认表数量为 `1`
-- 当 `--count > 1` 时，表名命名规则为 `hdfs_log_<num>`，例如 `hdfs_log_1`、`hdfs_log_2`
+- `auto` 支持 `--table-offset`，默认 `0`，控制生成表名后缀的起始偏移
+- 当 `--count > 1` 或 `--table-offset > 0` 时，表名命名规则为 `hdfs_log_<num>`
+- 后缀编号从 `--table-offset + 1` 开始，例如 `--count 2 --table-offset 3` 会生成 `hdfs_log_4`、`hdfs_log_5`
 - `auto` 默认索引名为 `ft_idx`
 - `auto` 默认索引列为 `body`
 - `auto` 默认导入 `100000` 行数据
@@ -118,16 +126,17 @@ select count(*) from test.hdfs_log where fts_match_word('china',body) or not fts
 - `auto` 导入阶段的 `completed import` 日志会追加写入当前目录下的 `log/insert_result.log`
 - `auto` 导入阶段的插入重试日志和最终失败日志会追加写入当前目录下的 `log/insert_error.log`
 - `auto` 默认开启 freshness 检查；支持通过 `--no-freshness` 参数显式关闭，并透传给导入阶段
+- 当指定 `--no-freshness` 时，导入阶段也不检查 `--freshness-batch <= --row-limit` 这条约束
 - 当 `auto` 未指定 `--no-freshness` 时，导入阶段会在插入完成后每隔 5 秒执行
 ```
 SELECT COUNT(*) FROM <table> WHERE fts_match_word('china',body) OR NOT fts_match_word('china',body);
 ```
 - 当查询结果减去导入前基线值等于本次导入行数时，视为数据可见；否则持续轮询直到达到 30 分钟超时
 - 默认开启的 freshness 日志会写入当前目录下带时间后缀的文件，例如 `log/freshness_progress_YYYYMMDD_HHMMSS.log` 和 `log/freshness_result_YYYYMMDD_HHMMSS.log`
-- 当 `--count > 1` 时，`auto` 会对每一张目标表依次执行建表、加索引、导入数据的相同流程
+- 当目标表数量大于 1 时，`auto` 会对每一张目标表依次执行建表、加索引、导入数据的相同流程
 - `auto` 中的建表和加索引阶段复用 `run_sqls` 的多线程逻辑
 - `auto` 中的建表和加索引按阶段执行：先完成所有表的建表，再开始所有表的加索引
-- 当 `--count > 1` 且不是 `--dry-run` 时，`auto` 中的建表和加索引阶段会按目标表并行执行
+- 当目标表数量大于 1 且不是 `--dry-run` 时，`auto` 中的建表和加索引阶段会按目标表并行执行
 - `auto` 在真实执行时，导入阶段会按目标表使用多线程并行执行
 - `auto` 在 `--dry-run` 模式下，导入阶段保持串行输出，避免多线程打乱 SQL 文本显示
 - `auto` 中的 `--row-limit` 表示每张表的导入行数上限

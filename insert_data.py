@@ -65,12 +65,15 @@ def quote_literal(value: str) -> str:
     return "'" + value.replace("\\", "\\\\").replace("'", "''") + "'"
 
 
-def build_table_names(base_name: str, count: int) -> List[str]:
+def build_table_names(base_name: str, count: int, table_offset: int = 0) -> List[str]:
     if count < 1:
         raise ValueError("table count must be >= 1")
-    if count == 1:
+    if table_offset < 0:
+        raise ValueError("table offset must be >= 0")
+    if count == 1 and table_offset == 0:
         return [base_name]
-    return [f"{base_name}_{idx}" for idx in range(1, count + 1)]
+    start_idx = table_offset + 1
+    return [f"{base_name}_{idx}" for idx in range(start_idx, start_idx + count)]
 
 
 @dataclass
@@ -247,6 +250,12 @@ def add_insert_data_args(parser: argparse.ArgumentParser, *, csv_file_nargs: str
     parser.add_argument("--database", default=DEFAULT_DATABASE, help=f"Database name, default: {DEFAULT_DATABASE}")
     parser.add_argument("--table", default=DEFAULT_TABLE, help=f"Base table name, default: {DEFAULT_TABLE}")
     parser.add_argument("--count", type=int, default=1, help="Table count. >1 creates <table>_<num>")
+    parser.add_argument(
+        "--table-offset",
+        type=int,
+        default=0,
+        help="Start offset for generated table suffixes",
+    )
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Rows per batch insert statement")
     parser.add_argument(
         "--row-limit",
@@ -473,10 +482,13 @@ def run_insert_data(args: argparse.Namespace, parser: Optional[argparse.Argument
     if args.count < 1:
         print("table count must be >= 1", file=sys.stderr)
         return 2
+    if args.table_offset < 0:
+        print("table offset must be >= 0", file=sys.stderr)
+        return 2
     if args.row_limit < 0:
         print("row limit must be >= 0", file=sys.stderr)
         return 2
-    if args.row_limit > 0 and args.freshness_batch > args.row_limit:
+    if args.freshness and args.row_limit > 0 and args.freshness_batch > args.row_limit:
         print("freshness batch must be <= row limit", file=sys.stderr)
         return 2
     if args.print_interval < 0:
@@ -489,8 +501,9 @@ def run_insert_data(args: argparse.Namespace, parser: Optional[argparse.Argument
         return 2
 
     try:
+        # split total rows into windows by freshness batch size
         row_windows = list(iter_row_windows(args.row_limit, args.freshness_batch)) if args.row_limit > 0 else [(0, 0)]
-        table_names = build_table_names(args.table, args.count)
+        table_names = build_table_names(args.table, args.count, args.table_offset)
 
         # print table names
         if len(table_names) > 1:
@@ -498,7 +511,7 @@ def run_insert_data(args: argparse.Namespace, parser: Optional[argparse.Argument
             mode = "dry-run" if args.dry_run else "execute"
             print(f"[insert-data] mode={mode} tables={joined_targets}")
 
-        # iterate row windows
+        # iterate rows in each window
         for batch_index, (row_offset, row_limit) in enumerate(row_windows, start=1):
             if len(row_windows) > 1:
                 print(

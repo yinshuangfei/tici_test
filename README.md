@@ -48,7 +48,7 @@ python main.py auto --count 4 --dry-run
 ```
 
 Use `--dry-run` to print SQL without executing it.
-`auto` is a template command. It creates table(s), adds one fulltext index per table, and then inserts data from CSV into each table. The default table count is `1`. When `--count > 1`, table names follow the `<table>_<num>` pattern. The default insert row limit is `100000` for each table.
+`auto` is a template command. It creates table(s), adds one fulltext index per table, and then inserts data from CSV into each table. The default table count is `1`. When `--count > 1` or `--table-offset > 0`, table names follow the `<table>_<num>` pattern, and numbering starts from `--table-offset + 1`. The default insert row limit is `100000` for each table.
 `main.py` prints command summaries and target table labels before each stage so multi-table runs are easier to follow.
 For `create-table`, `drop-table`, `add-index`, and `drop-index`, when the target table count is greater than `1`, execution runs in parallel. `--dry-run` still prints SQL sequentially.
 In `auto`, the create-table and add-index stages also reuse the same parallel SQL execution logic, but they run in separate phases: all create-table work finishes first, then add-index starts. `--dry-run` still keeps the SQL output sequential.
@@ -56,7 +56,7 @@ In `auto`, the insert stage runs in parallel by table when actually executing. `
 Freshness is enabled by default in `auto`. `auto --no-freshness` disables the post-insert visibility check for the insert stage.
 `query` defaults to `select count(*) from test.hdfs_log where fts_match_word('china',body) or not fts_match_word('china',body);`.
 `query --query-loop-count` controls how many times the same query is executed. The default is `1`.
-`query --count` controls how many tables are queried with the `<table>_<num>` naming rule. For custom SQL, `{table}` can be used as a placeholder for the current `database.table`.
+`query --count` controls how many tables are queried with the `<table>_<num>` naming rule. `--table-offset` controls the starting suffix offset, so numbering starts from `--table-offset + 1`. For custom SQL, `{table}` can be used as a placeholder for the current `database.table`.
 `query --tikv` uses `select '<idx>' as table_idx,count(*) from <table_name>;` for each target table.
 When `query --query-loop-count > 1`, the query executions run in parallel. `--dry-run` still prints SQL sequentially to keep output readable.
 `check` reuses the same table selection and non-`--tikv` SQL generation logic as `query`, then runs the built-in `--tikv` count SQL for the same target table and compares the returned results.
@@ -68,34 +68,21 @@ When `query --query-loop-count > 1`, the query executions run in parallel. `--dr
 `insert_data.py` reads a CSV file and inserts rows into `test.hdfs_log`.
 It reads and inserts data batch by batch through the Python `mysql.connector` library. The default batch size is `1000`, the default row limit is `100000`, and progress is printed every `3` seconds by default. When a batch insert fails, it retries up to `10` times with a `1` second interval.
 If `csv_file` is omitted, it uses `data/hdfs-logs-multitenants.csv`.
-When `--count > 1`, target tables follow the `<table>_<num>` naming rule. Multi-table execution runs in parallel unless `--dry-run` is used.
+When `--count > 1` or `--table-offset > 0`, target tables follow the `<table>_<num>` naming rule, and numbering starts from `--table-offset + 1`. Multi-table execution runs in parallel unless `--dry-run` is used.
 Each `completed import` line is also appended to `log/insert_result.log` under the current working directory. Insert retry and fatal insert failure messages are also appended to `log/insert_error.log`.
 Freshness is enabled by default. Unless `--no-freshness` is specified, the script records the target table row count before inserting, then polls `select count(*) from <table> where fts_match_word('china',body) or not fts_match_word('china',body);` every `5` seconds after the import until the visible newly inserted row count matches the imported row count, or until a fixed `30` minute timeout is reached. The freshness logs are written to timestamp-suffixed files such as `log/freshness_progress_YYYYMMDD_HHMMSS.log` and `log/freshness_result_YYYYMMDD_HHMMSS.log` under the current working directory.
+When `--no-freshness` is specified, the script also skips the `--freshness-batch <= --row-limit` validation.
 
 Examples:
 
 ```bash
 python insert_data.py --dry-run
 python insert_data.py --count 4 --dry-run
+python insert_data.py --count 4 --table-offset 2 --dry-run
 python insert_data.py data/hdfs-logs-multitenants.csv --dry-run
 python insert_data.py data/hdfs-logs-multitenants.csv --has-header
 python insert_data.py data/hdfs-logs-multitenants.csv --batch-size 1000 --row-limit 5000 --print-interval 3
 python insert_data.py data/hdfs-logs-multitenants.csv --no-freshness
-```
-
-## freshness.py
-
-`freshness.py` provides a bounded concurrency freshness polling module.
-It creates an internal thread pool with a configurable size. The default pool size is `10`. New tasks are rejected immediately when all worker slots are already occupied, so excess tasks are not queued.
-Each task accepts a target row count, MySQL connection info, database and table name, polling interval, and timeout. It repeatedly executes `select count(*) from <table> where fts_match_word('china',body) or not fts_match_word('china',body);` until the current row count reaches the target row count or the task times out.
-Polling progress is appended to timestamp-suffixed files such as `log/freshness_progress_YYYYMMDD_HHMMSS.log`, and final results are appended to files such as `log/freshness_result_YYYYMMDD_HHMMSS.log`.
-
-Example:
-
-```bash
-python freshness.py 100000
-python freshness.py 100000 --database test --table hdfs_log --poll-interval 5 --timeout 1800
-python freshness.py 100000 --host 127.0.0.1 --port 4000 --user root --password '' --max-workers 1
 ```
 
 ## tici.py

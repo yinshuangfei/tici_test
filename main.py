@@ -50,12 +50,15 @@ def quote_literal(value: str) -> str:
     return "'" + value.replace("\\", "\\\\").replace("'", "''") + "'"
 
 
-def build_table_names(base_name: str, count: int) -> List[str]:
+def build_table_names(base_name: str, count: int, table_offset: int = 0) -> List[str]:
     if count < 1:
         raise ValueError("table count must be >= 1")
-    if count == 1:
+    if table_offset < 0:
+        raise ValueError("table offset must be >= 0")
+    if count == 1 and table_offset == 0:
         return [base_name]
-    return [f"{base_name}_{idx}" for idx in range(1, count + 1)]
+    start_idx = table_offset + 1
+    return [f"{base_name}_{idx}" for idx in range(start_idx, start_idx + count)]
 
 
 @dataclass
@@ -340,7 +343,7 @@ def run_query(args: argparse.Namespace) -> int:
         return 2
 
     print_query_summary(args.command, dry_run=args.dry_run)
-    query_table_names = build_table_names(args.table, args.count)
+    query_table_names = build_table_names(args.table, args.count, args.table_offset)
     print_command_summary(args.command, args.database, query_table_names, dry_run=args.dry_run)
 
     query_sqls = []
@@ -364,7 +367,7 @@ def run_check(args: argparse.Namespace) -> int:
         return 2
 
     print_query_summary(args.command, dry_run=args.dry_run)
-    query_table_names = build_table_names(args.table, args.count)
+    query_table_names = build_table_names(args.table, args.count, args.table_offset)
     print_command_summary(args.command, args.database, query_table_names, dry_run=args.dry_run)
 
     client = build_client(args)
@@ -411,6 +414,12 @@ def add_common_table_args(parser: argparse.ArgumentParser, *, include_count: boo
     parser.add_argument("--table", default=DEFAULT_TABLE, help=f"Base table name, default: {DEFAULT_TABLE}")
     if include_count:
         parser.add_argument("--count", type=int, default=1, help="Table count. >1 creates <table>_<num>")
+        parser.add_argument(
+            "--table-offset",
+            type=int,
+            default=0,
+            help="Start offset for generated table suffixes",
+        )
 
 
 def add_insert_runtime_args(
@@ -536,6 +545,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Table count for query targets. >1 creates <table>_<num>",
     )
     query_parser.add_argument(
+        "--table-offset",
+        type=int,
+        default=0,
+        help="Start offset for generated table suffixes",
+    )
+    query_parser.add_argument(
         "--sql",
         default=DEFAULT_QUERY_SQL,
         help="Query SQL text",
@@ -560,6 +575,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=1,
         help="Table count for check targets. >1 creates <table>_<num>",
+    )
+    check_parser.add_argument(
+        "--table-offset",
+        type=int,
+        default=0,
+        help="Start offset for generated table suffixes",
     )
     check_parser.add_argument(
         "--sql",
@@ -607,6 +628,7 @@ def build_insert_namespace(args: argparse.Namespace) -> argparse.Namespace:
         database=args.database,
         table=args.table,
         count=getattr(args, "count", 1),
+        table_offset=getattr(args, "table_offset", 0),
         batch_size=args.batch_size,
         row_limit=args.row_limit,
         freshness_batch=args.freshness_batch,
@@ -672,7 +694,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return run_check(args)
 
         client = build_client(args)
-        table_names = build_table_names(args.table, getattr(args, "count", 1))
+        table_names = build_table_names(args.table, getattr(args, "count", 1), getattr(args, "table_offset", 0))
         print_command_summary(args.command, args.database, table_names, dry_run=args.dry_run)
 
         if args.command == "create-table":
