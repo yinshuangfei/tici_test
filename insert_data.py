@@ -4,6 +4,7 @@
 import argparse
 import concurrent.futures
 import csv
+from email import message
 import sys
 import time
 from dataclasses import dataclass
@@ -387,7 +388,9 @@ def run_insert_data_for_table(args: argparse.Namespace) -> int:
                                 f"attempt={attempt}/{DEFAULT_INSERT_RETRY_COUNT} rows={len(batch)} error={exc}"
                             )
                             emit_log(message, output_file=DEFAULT_INSERT_ERROR_LOG, stderr=True)
-                            raise
+                            # TODO: handle error gracefully
+                            # raise
+                            return 1
 
                         message = (
                             f"[{target_name}] insert batch failed attempt={attempt}/{DEFAULT_INSERT_RETRY_COUNT} "
@@ -539,12 +542,13 @@ def run_insert_data(args: argparse.Namespace, parser: Optional[argparse.Argument
                     table_name = future_map[future]
                     exit_code = future.result()
                     if exit_code != 0:
-                        print(
+                        message = (
                             f"[insert-data] failed target={format_table_target(args.database, table_name)} "
-                            f"exit_code={exit_code}",
-                            file=sys.stderr,
+                            f"exit_code={exit_code}"
                         )
-                        return exit_code
+                        emit_log(message, output_file=DEFAULT_INSERT_ERROR_LOG, stderr=True)
+                        # TODO: handle error gracefully
+                        # return exit_code
         return 0
     except mysql.connector.Error as exc:
         print(f"database operation failed: {exc}", file=sys.stderr)
