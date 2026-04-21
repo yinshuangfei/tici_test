@@ -15,8 +15,8 @@ python analyze_freshness.py --show-invalid
 python analyze_freshness.py --log-dir log --pattern 'freshness_result_20260420_*.log'
 ```
 
-Running `python analyze_freshness.py` without any arguments prints the help message and exits.
-Pass at least one explicit option such as `--log-dir log` when you want to execute the analysis.
+Running `python analyze_freshness.py` without any arguments executes the analysis directly and uses the default `log/` directory.
+Use `--log-dir` only when logs are stored in a different directory.
 
 Output format:
 
@@ -101,6 +101,7 @@ If `csv_file` is omitted, it uses `data/hdfs-logs-multitenants.csv`.
 When `--count > 1` or `--table-offset > 0`, target tables follow the `<table>_<num>` naming rule, and numbering starts from `--table-offset + 1`. Multi-table execution runs in parallel unless `--dry-run` is used.
 Each `completed import` line is also appended to `log/insert_result.log` under the current working directory. Insert retry and fatal insert failure messages are also appended to `log/insert_error.log`.
 Freshness is enabled by default. Unless `--no-freshness` is specified, the script records the target table row count before inserting, then polls `select count(*) from <table> where fts_match_word('china',body) or not fts_match_word('china',body);` every `5` seconds after the import until the visible newly inserted row count matches the imported row count, or until a fixed `30` minute timeout is reached. The freshness logs are written to timestamp-suffixed files such as `log/freshness_progress_YYYYMMDD_HHMMSS.log` and `log/freshness_result_YYYYMMDD_HHMMSS.log` under the current working directory.
+If `--freshness-batch` is omitted, it defaults to the effective `--row-limit` value, so one import command normally corresponds to one freshness round unless you explicitly split it into smaller windows.
 When `--no-freshness` is specified, the script also skips the `--freshness-batch <= --row-limit` validation.
 
 Examples:

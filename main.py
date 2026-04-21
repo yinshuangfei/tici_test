@@ -447,10 +447,10 @@ def add_insert_runtime_args(
     parser.add_argument(
         "--freshness-batch",
         type=int,
-        default=insert_data.DEFAULT_FRESHNESS_BATCH,
+        default=None,
         help=(
             "Split row-limit into sequential batches for each insert/freshness round, "
-            f"default: {insert_data.DEFAULT_FRESHNESS_BATCH}"
+            "default: same as the effective --row-limit value"
         ),
     )
     parser.add_argument(

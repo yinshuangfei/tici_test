@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS test.hdfs_log (
   - `--table-offset`，默认 `0`，控制生成表名后缀的起始偏移
   - `--batch-size`，默认 `1000`
   - `--row-limit`，默认 `100000`
+  - `--freshness-batch`，默认等于 `--row-limit` 的生效值
   - `--print-interval`，默认 `3`，表示每隔多少秒输出一次进度
   - `--encoding`，默认 `utf-8`
   - `--delimiter`，默认 `,`
@@ -75,6 +76,7 @@ INSERT INTO test.hdfs_log (`timestamp`, `severity_text`, `body`, `tenant_id`) VA
 ```
 - 程序不会先拼接整份 CSV 的总 SQL，而是逐批构建并逐批执行
 - `--row-limit` 控制总导入行数上限，`--batch-size` 只控制单条 `INSERT INTO` 语句包含的行数
+- 当未显式指定 `--freshness-batch` 时，默认取当前 `--row-limit` 的生效值，因此默认只会执行一轮导入和一轮 freshness 检查；显式指定更小的 `--freshness-batch` 时，才会将一次导入拆成多轮顺序执行
 - 非 `--dry-run` 模式下，数据库写入通过 Python `mysql.connector` 库按批次执行
 - 每批数据使用参数化批量插入，避免手工拼接值再交给外部 `mysql` 客户端执行
 - 当单批次插入失败时，程序会对该批次最多重试 10 次，每次重试前等待 1 秒，并重新建立数据库连接

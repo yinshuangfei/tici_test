@@ -22,7 +22,6 @@ DEFAULT_TABLE = "hdfs_log"
 DEFAULT_COLUMNS = ("timestamp", "severity_text", "body", "tenant_id")
 DEFAULT_BATCH_SIZE = 1000
 DEFAULT_ROW_LIMIT = 100000
-DEFAULT_FRESHNESS_BATCH = 10000
 DEFAULT_PROGRESS_INTERVAL = 3.0
 DEFAULT_INSERT_RETRY_COUNT = 10
 DEFAULT_INSERT_RETRY_INTERVAL = 1.0
@@ -267,10 +266,10 @@ def add_insert_data_args(parser: argparse.ArgumentParser, *, csv_file_nargs: str
     parser.add_argument(
         "--freshness-batch",
         type=int,
-        default=DEFAULT_FRESHNESS_BATCH,
+        default=None,
         help=(
             "Split row-limit into sequential batches for each insert/freshness round, "
-            f"default: {DEFAULT_FRESHNESS_BATCH}"
+            "default: same as the effective --row-limit value"
         ),
     )
     parser.add_argument(
@@ -336,6 +335,14 @@ def iter_row_windows(row_limit: int, freshness_batch: int) -> Iterator[Tuple[int
         current_limit = min(freshness_batch, row_limit - row_offset)
         yield row_offset, current_limit
         row_offset += current_limit
+
+
+def resolve_freshness_batch(args: argparse.Namespace) -> int:
+    if args.freshness_batch is not None:
+        return args.freshness_batch
+    if args.row_limit > 0:
+        return args.row_limit
+    return 1
 
 
 def run_insert_data_for_table(args: argparse.Namespace) -> int:
@@ -476,6 +483,9 @@ def run_insert_data_for_table(args: argparse.Namespace) -> int:
 
 
 def run_insert_data(args: argparse.Namespace, parser: Optional[argparse.ArgumentParser] = None) -> int:
+    args = argparse.Namespace(**vars(args))
+    args.freshness_batch = resolve_freshness_batch(args)
+
     if args.batch_size < 1:
         print("batch size must be >= 1", file=sys.stderr)
         return 2

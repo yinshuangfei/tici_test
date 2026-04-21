@@ -4,3 +4,4 @@ hdfs-logs-multitenants.csv
 data/*
 log/*
 *.log
+.codex

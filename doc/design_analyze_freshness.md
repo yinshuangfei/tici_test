@@ -16,12 +16,11 @@
 
 ## 实现细节
 - 脚本文件为 `analyze_freshness.py`
-- 命令行默认无参数时输出 help 信息并退出
+- 命令行默认无参数时直接执行统计，默认扫描 `log/` 目录
 - 支持的可选参数如下：
   - `--log-dir`，默认 `log`
   - `--pattern`，默认 `freshness_result_*.log`
   - `--show-invalid`，指定后输出无效行明细
-- 需要实际执行统计时，需显式传入参数，例如 `--log-dir log`
 - 日志行按以下格式解析：
 ```
 [2026-04-20 11:46:22] [test.hdfs_log_1876] freshness reached elapsed=17.1s baseline_row_count=49000 imported_rows=10000 visible_rows=10000 total_rows=59000

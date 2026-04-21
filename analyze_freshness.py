@@ -3,10 +3,10 @@
 
 import argparse
 import re
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
+import sys
 
 
 LINE_PATTERN = re.compile(
@@ -83,9 +83,6 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         action="store_true",
         help="Print invalid lines where total_rows != baseline_row_count + imported_rows.",
     )
-    if not argv:
-        parser.print_help()
-        raise SystemExit(0)
     return parser.parse_args(argv)
 
 

@@ -126,6 +126,7 @@ select count(*) from test.hdfs_log where fts_match_word('china',body) or not fts
 - `auto` 导入阶段的 `completed import` 日志会追加写入当前目录下的 `log/insert_result.log`
 - `auto` 导入阶段的插入重试日志和最终失败日志会追加写入当前目录下的 `log/insert_error.log`
 - `auto` 默认开启 freshness 检查；支持通过 `--no-freshness` 参数显式关闭，并透传给导入阶段
+- `auto` 中若未显式指定 `--freshness-batch`，则导入阶段默认取 `--row-limit` 的生效值
 - 当指定 `--no-freshness` 时，导入阶段也不检查 `--freshness-batch <= --row-limit` 这条约束
 - 当 `auto` 未指定 `--no-freshness` 时，导入阶段会在插入完成后每隔 5 秒执行
 ```
