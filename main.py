@@ -767,7 +767,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if args.command == "auto":
             run_sqls(client, create_sqls, args.dry_run, parallel=True)
             run_sqls(client, add_index_sqls, args.dry_run, parallel=True)
-            return run_auto_inserts(args, table_names)
+            return
+            #return run_auto_inserts(args, table_names)
             
         run_sqls(client, sqls, args.dry_run, parallel=args.command in parallel_sql_commands)
         return 0

@@ -1,5 +1,35 @@
 This is test tools for TiDB-TiCI.
 
+## analyze_freshness.py
+
+`analyze_freshness.py` scans `log/freshness_result_*.log` and generates grouped freshness statistics by file, plus a merged `Summarize` section across all files.
+It parses lines in the `freshness reached` format, ignores malformed lines, and treats lines as invalid when `total_rows != baseline_row_count + imported_rows`.
+Grouping is based on the ten-thousand bucket floor of `baseline_row_count`, so values within the same bucket share one group such as `group-10000` or `group-20000`.
+
+Examples:
+
+```bash
+python analyze_freshness.py
+python analyze_freshness.py --log-dir log
+python analyze_freshness.py --show-invalid
+python analyze_freshness.py --log-dir log --pattern 'freshness_result_20260420_*.log'
+```
+
+Running `python analyze_freshness.py` without any arguments prints the help message and exits.
+Pass at least one explicit option such as `--log-dir log` when you want to execute the analysis.
+
+Output format:
+
+```text
+freshness_result_20260420_080047.log
+起始行数量级, 平均插入行数, 统计条目数, 平均耗时(s)
+group-0, 10000.00, 4616, 31.53
+
+Summarize
+起始行数量级, 平均插入行数, 统计条目数, 平均耗时(s)
+group-0, 10000.00, 4616, 31.53
+```
+
 ## main.py
 
 `main.py` provides a small CLI for common table operations:
