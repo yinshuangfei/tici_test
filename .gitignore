@@ -3,3 +3,4 @@ __pycache__/*
 hdfs-logs-multitenants.csv
 data/*
 log/*
+*.log
