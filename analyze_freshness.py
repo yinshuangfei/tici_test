@@ -164,13 +164,28 @@ def sorted_group_names(grouped: Dict[str, GroupStats]) -> List[str]:
 
 
 def print_grouped_stats(title: str, grouped: Dict[str, GroupStats]) -> None:
-    print(title)
-    print("起始行数量级, 平均插入行数, 统计条目数, 平均耗时(s)")
+    print(f"## {title}")
+    print("| 起始行数量级 | 平均插入行数 | 统计条目数 | 平均耗时(s) |")
+    print("| --- | ---: | ---: | ---: |")
     for name in sorted_group_names(grouped):
         group_stats = grouped[name]
         print(
-            f"{name}, {group_stats.avg_inserted:.2f}, "
-            f"{group_stats.lines}, {group_stats.avg_elapsed:.2f}"
+            f"| {name} | {group_stats.avg_inserted:.2f} | "
+            f"{group_stats.lines} | {group_stats.avg_elapsed:.2f} |"
+        )
+    print()
+
+
+def print_invalid_lines(invalid_lines: Sequence[InvalidLine]) -> None:
+    print("### invalid_details")
+    print("| 文件 | 行号 | 原因 | 原始内容 |")
+    print("| --- | ---: | --- | --- |")
+    for item in invalid_lines:
+        escaped_line = item.line.replace("|", r"\|")
+        escaped_reason = item.reason.replace("|", r"\|")
+        print(
+            f"| {item.file_path} | {item.line_number} | "
+            f"{escaped_reason} | {escaped_line} |"
         )
     print()
 
@@ -190,11 +205,7 @@ def main() -> int:
         stats_by_file = results[file_path]
         print_grouped_stats(file_path.name, stats_by_file.grouped)
         if args.show_invalid and stats_by_file.invalid_lines:
-            print("invalid_details")
-            for item in stats_by_file.invalid_lines:
-                print(f"{item.file_path}:{item.line_number}: {item.reason}")
-                print(item.line)
-        print()
+            print_invalid_lines(stats_by_file.invalid_lines)
 
     print_grouped_stats("Summarize", merge_grouped_stats(results))
 

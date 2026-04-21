@@ -2,7 +2,7 @@ This is test tools for TiDB-TiCI.
 
 ## analyze_freshness.py
 
-`analyze_freshness.py` scans `log/freshness_result_*.log` and generates grouped freshness statistics by file, plus a merged `Summarize` section across all files.
+`analyze_freshness.py` scans `log/freshness_result_*.log` and generates grouped freshness statistics by file in Markdown table format, plus a merged `Summarize` section across all files.
 It parses lines in the `freshness reached` format, ignores malformed lines, and treats lines as invalid when `total_rows != baseline_row_count + imported_rows`.
 Grouping is based on the ten-thousand bucket floor of `baseline_row_count`, so values within the same bucket share one group such as `group-10000` or `group-20000`.
 
@@ -21,13 +21,15 @@ Use `--log-dir` only when logs are stored in a different directory.
 Output format:
 
 ```text
-freshness_result_20260420_080047.log
-起始行数量级, 平均插入行数, 统计条目数, 平均耗时(s)
-group-0, 10000.00, 4616, 31.53
+## freshness_result_20260420_080047.log
+| 起始行数量级 | 平均插入行数 | 统计条目数 | 平均耗时(s) |
+| --- | ---: | ---: | ---: |
+| group-0 | 10000.00 | 4616 | 31.53 |
 
-Summarize
-起始行数量级, 平均插入行数, 统计条目数, 平均耗时(s)
-group-0, 10000.00, 4616, 31.53
+## Summarize
+| 起始行数量级 | 平均插入行数 | 统计条目数 | 平均耗时(s) |
+| --- | ---: | ---: | ---: |
+| group-0 | 10000.00 | 4616 | 31.53 |
 ```
 
 ## main.py
