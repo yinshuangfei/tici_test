@@ -1,5 +1,6 @@
 use clap::Parser;
-use tici_test_rust::common::{MysqlConfig, print_stderr_log, quote_identifier};
+use tici_test_rust::common::{MysqlConfig, quote_identifier};
+use tici_test_rust::log::print_stderr_log;
 
 const DEFAULT_HOST: &str = "10.2.12.79";
 const DEFAULT_PORT: u16 = 9528;

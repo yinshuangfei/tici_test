@@ -1,7 +1,8 @@
 use clap::Parser;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use tici_test_rust::common::{print_stderr_log, resolve_project_path};
+use tici_test_rust::common::resolve_project_path;
+use tici_test_rust::log::print_stderr_log;
 
 #[derive(Parser, Debug)]
 #[command(about = "Analyze freshness_result_*.log files and print grouped statistics by file.")]

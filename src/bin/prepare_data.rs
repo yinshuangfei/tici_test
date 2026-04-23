@@ -6,7 +6,8 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
-use tici_test_rust::common::{format_size, print_stderr_log, resolve_project_path};
+use tici_test_rust::common::{format_size, resolve_project_path};
+use tici_test_rust::log::print_stderr_log;
 
 const DEFAULT_OUTPUT_DIR: &str = "data";
 const DEFAULT_TIMEOUT: f64 = 30.0;

@@ -2,14 +2,14 @@ use clap::{Parser, Subcommand};
 use mysql_async::Pool;
 use tici_test_rust::common::{
     MysqlConfig, build_table_names, execute_sql_with_pool, format_table_target,
-    format_table_targets_summary, print_stderr_log, print_stdout_log, query_tsv_with_pool,
-    quote_identifier, quote_literal,
+    format_table_targets_summary, query_tsv_with_pool, quote_identifier, quote_literal,
 };
 use tici_test_rust::insert_logic::{
     DEFAULT_BATCH_SIZE, DEFAULT_CONN_POOL_SIZE, DEFAULT_CSV_FILE, DEFAULT_DATABASE, DEFAULT_HOST,
     DEFAULT_PORT, DEFAULT_PROGRESS_INTERVAL, DEFAULT_ROW_LIMIT, DEFAULT_TABLE, DEFAULT_USER,
     InsertArgs, run_insert_data,
 };
+use tici_test_rust::log::{print_stderr_log, print_stdout_log};
 use tokio::task::JoinSet;
 
 const DEFAULT_INDEX: &str = "ft_idx";

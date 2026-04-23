@@ -1,8 +1,9 @@
 use crate::common::{
-    MysqlConfig, append_progress_log, build_table_names, format_table_target,
-    format_table_targets_summary, normalize_delimiter, now_log_suffix, print_stderr_log,
-    print_stdout_log, project_root, quote_identifier, quote_literal, resolve_project_path,
-    with_timestamp_suffix,
+    MysqlConfig, build_table_names, format_table_target, format_table_targets_summary,
+    normalize_delimiter, project_root, quote_identifier, quote_literal, resolve_project_path,
+};
+use crate::log::{
+    append_progress_log, now_log_suffix, print_stderr_log, print_stdout_log, with_timestamp_suffix,
 };
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Params, Pool, Value};
