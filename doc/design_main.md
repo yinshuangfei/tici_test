@@ -3,7 +3,8 @@
 - main.py
 - src/bin/main.rs
 - src/common.rs
-- src/insert_logic.rs
+- src/insert_table.rs
+- src/sql_pool.rs
 
 ## 要求
 - 修改代码的同时，同步更新 README.md 和对应的设计文档
@@ -21,12 +22,12 @@
 
 ## 入口说明
 - 主脚本文件改为 `main.py`
-- Rust 对应实现位于 `src/bin/main.rs`
+- Rust 对应实现位于 `src/bin/main.rs`；其中建表 SQL 生成逻辑提取在 `src/create_table.rs`，删表 SQL 生成逻辑提取在 `src/drop_table.rs`，查询与校验逻辑提取在 `src/query_table.rs`
 - 命令行默认无参数时输出 help 信息
 - `insert-data` 子命令复用 `insert_data.py` 的参数和执行逻辑
 - `auto` 子命令用于执行固定流程模版
 - `main.py` 的输出按命令摘要、阶段动作和目标表分层展示，方便查看多表执行进度
-- Rust 版本复用 `src/common.rs` 中的 MySQL CLI / 查询辅助逻辑，以及 `src/insert_logic.rs` 中的导入逻辑
+- Rust 版本复用 `src/common.rs` 中的通用路径与 SQL 文本辅助逻辑、`src/sql_pool.rs` 中的数据库连接池与查询执行逻辑，以及 `src/insert_table.rs` 中的导入逻辑
 - Rust 版本中的相对文件路径按项目根目录解析，不依赖命令执行时所在的 shell 目录
 - Rust 版本中的 `insert-data` 相关入口支持 `--conn-pool-size` 参数，默认 `1000`
 - Rust 版本中的 `create-table`、`drop-table`、`add-index`、`drop-index`、`import-into`、`query`、`check` 和 `auto` 也使用共享 `mysql_async` 连接池执行 SQL，连接池大小同样由 `--conn-pool-size` 控制；每条 SQL 在执行前从池中取连接，执行结束后归还
@@ -92,7 +93,8 @@ select count(*) from test.hdfs_log where fts_match_word('china',body) or not fts
 - 支持通过 `--sql` 传入自定义查询语句
 - 当自定义 SQL 中包含 `{table}` 时，执行时会替换为当前目标表的 `database.table`
 - 支持通过 `--query-loop-count` 指定同一条查询重复执行的次数，默认 `1`
-- 当 `--query-loop-count > 1` 且不是 `--dry-run` 时，查询任务按目标表和轮次使用 Tokio async task 并行执行
+- 当不是 `--dry-run` 且待执行查询语句数量大于 1 时，查询任务按目标表和轮次使用 Tokio async task 并行执行
+- Rust 版本中的 `query` 会在后台并发执行这些查询，但会按照原始语句顺序输出结果，避免 stdout 顺序被并发打乱
 - 当 `--dry-run` 时，查询阶段保持串行输出，避免多线程打乱 SQL 文本显示
 - `query` 支持通过 `--dry-run` 只输出 SQL 而不真正执行
 

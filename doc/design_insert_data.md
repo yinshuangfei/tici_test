@@ -2,7 +2,8 @@
 ## 文件
 - insert_data.py
 - src/bin/insert_data.rs
-- src/insert_logic.rs
+- src/insert_table.rs
+- src/sql_pool.rs
 
 ## 要求
 - 修改代码的同时，同步更新 README.md 和对应的设计文档
@@ -29,7 +30,8 @@ CREATE TABLE IF NOT EXISTS test.hdfs_log (
 - Rust 对应实现位于 `src/bin/insert_data.rs`
 - `insert_data.py` 持有实际的参数解析、CSV 读取、SQL 生成和执行逻辑
 - `main.py` 通过 `insert-data` 子命令复用 `insert_data.py` 的实现，作为统一入口
-- Rust 版本将共享导入逻辑下沉到 `src/insert_logic.rs`，并由 `src/bin/main.rs` 与 `src/bin/insert_data.rs` 共同复用
+- Rust 版本将共享导入逻辑下沉到 `src/insert_table.rs`，并由 `src/bin/main.rs` 与 `src/bin/insert_data.rs` 共同复用
+- Rust 版本将数据库连接池、MySQL CLI 和查询执行相关逻辑下沉到 `src/sql_pool.rs`
 - 命令行默认无参数时输出 help 信息
 - 通过位置参数 `csv_file` 指定要导入的 csv 文件路径
 - 当未传入 `csv_file` 时，默认使用 `data/hdfs-logs-multitenants.csv`

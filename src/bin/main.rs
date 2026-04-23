@@ -1,15 +1,21 @@
 use clap::{Parser, Subcommand};
 use mysql_async::Pool;
 use tici_test_rust::common::{
-    MysqlConfig, build_table_names, execute_sql_with_pool, format_table_target,
-    format_table_targets_summary, query_tsv_with_pool, quote_identifier, quote_literal,
+    build_table_names, format_table_target, format_table_targets_summary, quote_identifier,
+    quote_literal,
 };
-use tici_test_rust::insert_logic::{
+use tici_test_rust::create_table::build_create_table_items;
+use tici_test_rust::drop_table::build_drop_table_items;
+use tici_test_rust::insert_table::{
     DEFAULT_BATCH_SIZE, DEFAULT_CONN_POOL_SIZE, DEFAULT_CSV_FILE, DEFAULT_DATABASE, DEFAULT_HOST,
     DEFAULT_PORT, DEFAULT_PROGRESS_INTERVAL, DEFAULT_ROW_LIMIT, DEFAULT_TABLE, DEFAULT_USER,
     InsertArgs, run_insert_data,
 };
 use tici_test_rust::log::{print_stderr_log, print_stdout_log};
+use tici_test_rust::query_table::{
+    CheckTableArgs, DEFAULT_QUERY_SQL, QueryConnArgs, QueryTableArgs, run_check, run_query,
+};
+use tici_test_rust::sql_pool::{MysqlConfig, build_optional_pool, execute_sql_with_pool};
 use tokio::task::JoinSet;
 
 const DEFAULT_INDEX: &str = "ft_idx";
@@ -17,8 +23,6 @@ const DEFAULT_IMPORT_SOURCE: &str = "s3://data/import-src/hdfs-logs-multitenants
 const DEFAULT_IMPORT_SORT_DIR: &str = "s3://ticidefaultbucket/tici/import-sort?access-key=minioadmin&secret-access-key=minioadmin&endpoint=http://10.2.12.81:19008&force-path-style=true";
 const DEFAULT_IMPORT_THREAD: usize = 8;
 const DEFAULT_AUTO_ROW_LIMIT: usize = 100000;
-const DEFAULT_QUERY_SQL: &str = "select '1' as table_idx, count(*) from test.hdfs_log where fts_match_word('china',body) or not fts_match_word('china',body);";
-
 #[derive(Parser, Debug)]
 #[command(about = "Table tools for TiCI")]
 struct Cli {
@@ -215,43 +219,10 @@ fn build_client(conn: &CommonConnArgs) -> MysqlConfig {
     }
 }
 
-fn build_pool(conn: &CommonConnArgs) -> Result<Pool, String> {
-    build_client(conn).build_pool(conn.conn_pool_size)
-}
-
-fn build_optional_pool(conn: &CommonConnArgs) -> Result<Option<Pool>, String> {
-    if conn.dry_run {
-        Ok(None)
-    } else {
-        build_pool(conn).map(Some)
-    }
-}
-
 fn print_command_summary(command: &str, database: &str, table_names: &[String], dry_run: bool) {
     let joined = format_table_targets_summary(database, table_names);
     let mode = if dry_run { "dry-run" } else { "execute" };
     print_stdout_log(&format!("[{command}] mode={mode} tables={joined}"));
-}
-
-fn print_query_summary(command: &str, dry_run: bool) {
-    let mode = if dry_run { "dry-run" } else { "execute" };
-    print_stdout_log(&format!("[{command}] mode={mode}"));
-}
-
-fn create_table_sql(database: &str, table_name: &str) -> Result<String, String> {
-    Ok(format!(
-        "CREATE TABLE IF NOT EXISTS {}.{} (\n    id BIGINT AUTO_INCREMENT,\n    timestamp BIGINT,\n    severity_text VARCHAR(50),\n    body TEXT,\n    tenant_id INT,\n    PRIMARY KEY (tenant_id, id)\n);",
-        quote_identifier(database)?,
-        quote_identifier(table_name)?
-    ))
-}
-
-fn drop_table_sql(database: &str, table_name: &str) -> Result<String, String> {
-    Ok(format!(
-        "DROP TABLE IF EXISTS {}.{};",
-        quote_identifier(database)?,
-        quote_identifier(table_name)?
-    ))
 }
 
 fn add_index_sql(
@@ -357,41 +328,6 @@ fn import_into_sql(args: &ImportArgs) -> Result<String, String> {
     ))
 }
 
-fn build_query_sql(
-    database: &str,
-    table_name: &str,
-    table_idx: usize,
-    sql: &str,
-    tikv: bool,
-) -> String {
-    let target = format_table_target(database, table_name);
-    if tikv {
-        return format!("select '{table_idx}' as table_idx,count(*) from {table_name};");
-    }
-    if sql.contains("{table}") {
-        return sql.replace("{table}", &target);
-    }
-    if sql == DEFAULT_QUERY_SQL {
-        return sql
-            .replacen(
-                "select '1' as table_idx",
-                &format!("select '{table_idx}' as table_idx"),
-                1,
-            )
-            .replace("test.hdfs_log", &target);
-    }
-    sql.to_string()
-}
-
-fn normalize_query_output(output: &str) -> String {
-    output
-        .trim()
-        .lines()
-        .map(str::trim_end)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 async fn run_sqls(
     pool: Option<&Pool>,
     dry_run: bool,
@@ -471,222 +407,6 @@ async fn run_sqls(
     }
 }
 
-async fn run_query(args: &QueryArgs) -> i32 {
-    if args.query_loop_count < 1 {
-        print_stderr_log("query loop count must be >= 1");
-        return 2;
-    }
-    if args.count < 1 {
-        print_stderr_log("query table count must be >= 1");
-        return 2;
-    }
-    print_query_summary("query", args.conn.dry_run);
-    let tables = match build_table_names(&args.table, args.count, args.table_offset) {
-        Ok(value) => value,
-        Err(err) => {
-            print_stderr_log(&err);
-            return 2;
-        }
-    };
-    print_command_summary("query", &args.conn.database, &tables, args.conn.dry_run);
-    let pool = if args.conn.dry_run {
-        None
-    } else {
-        match build_pool(&args.conn) {
-            Ok(pool) => Some(pool),
-            Err(err) => {
-                print_stderr_log(&err);
-                return 1;
-            }
-        }
-    };
-    let mut statements = Vec::new();
-    for round in 1..=args.query_loop_count {
-        print_stdout_log(&format!("[query] round={round}/{}", args.query_loop_count));
-        for (table_idx, table_name) in tables.iter().enumerate() {
-            statements.push((
-                "query".to_string(),
-                format_table_target(&args.conn.database, table_name),
-                build_query_sql(
-                    &args.conn.database,
-                    table_name,
-                    table_idx + 1,
-                    &args.sql,
-                    args.tikv,
-                ),
-            ));
-        }
-    }
-    if args.conn.dry_run || args.query_loop_count == 1 || statements.len() <= 1 {
-        for (_, target, sql) in &statements {
-            if args.conn.dry_run {
-                println!("{sql}");
-            } else if let Some(pool) = pool.as_ref() {
-                match query_tsv_with_pool(pool, sql).await {
-                    Ok(output) => {
-                        if !output.is_empty() {
-                            print_stdout_log(&format!("[query] target={target}, {output}"));
-                        }
-                    }
-                    Err(err) => {
-                        print_stderr_log(&format!(
-                            "[query] failed target={target} sql={sql:?} error={err}"
-                        ));
-                        return 1;
-                    }
-                }
-            }
-        }
-        return 0;
-    }
-    print_stdout_log(&format!("[query] tasks={}", statements.len()));
-    let pool = pool.expect("pool must exist");
-    let mut join_set = JoinSet::new();
-    for (_, target, sql) in statements {
-        let task_pool = pool.clone();
-        join_set.spawn(async move {
-            let output = query_tsv_with_pool(&task_pool, &sql).await;
-            (target, sql, output)
-        });
-    }
-    while let Some(result) = join_set.join_next().await {
-        let (target, sql, output) = match result {
-            Ok(value) => value,
-            Err(err) => {
-                print_stderr_log(&format!("[query] task join failed error={err}"));
-                return 1;
-            }
-        };
-        match output {
-            Ok(value) => {
-                if !value.is_empty() {
-                    println!("{value}");
-                }
-                print_stdout_log(&format!("[query] done target={target}"));
-            }
-            Err(err) => {
-                print_stderr_log(&format!(
-                    "[query] failed target={target} sql={sql:?} error={err}"
-                ));
-                return 1;
-            }
-        }
-    }
-    0
-}
-
-async fn run_check(args: &CheckArgs) -> i32 {
-    if args.query_loop_count < 1 {
-        print_stderr_log("check loop count must be >= 1");
-        return 2;
-    }
-    let tables = match build_table_names(&args.table, args.count, args.table_offset) {
-        Ok(value) => value,
-        Err(err) => {
-            print_stderr_log(&err);
-            return 2;
-        }
-    };
-    print_query_summary("check", args.conn.dry_run);
-    print_command_summary("check", &args.conn.database, &tables, args.conn.dry_run);
-    let pool = if args.conn.dry_run {
-        None
-    } else {
-        match build_pool(&args.conn) {
-            Ok(pool) => Some(pool),
-            Err(err) => {
-                print_stderr_log(&err);
-                return 1;
-            }
-        }
-    };
-    for round in 1..=args.query_loop_count {
-        let round_detail = format!("round={round}/{}", args.query_loop_count);
-        print_stdout_log(&format!("[check] {round_detail}"));
-        for (table_idx, table_name) in tables.iter().enumerate() {
-            let normal_sql = build_query_sql(
-                &args.conn.database,
-                table_name,
-                table_idx + 1,
-                &args.sql,
-                false,
-            );
-            let tikv_sql = build_query_sql(
-                &args.conn.database,
-                table_name,
-                table_idx + 1,
-                &args.sql,
-                true,
-            );
-            if args.conn.dry_run {
-                print_stdout_log("[check] variant=normal");
-                println!("{normal_sql}");
-                print_stdout_log("[check] variant=tikv");
-                println!("{tikv_sql}");
-                continue;
-            }
-            let normal_output =
-                match query_tsv_with_pool(pool.as_ref().expect("pool must exist"), &normal_sql)
-                    .await
-                {
-                    Ok(value) => normalize_query_output(&value),
-                    Err(err) => {
-                        print_stderr_log(&format!(
-                            "[check] failed target={} variant=normal sql={:?} error={}",
-                            format_table_target(&args.conn.database, table_name),
-                            normal_sql,
-                            err
-                        ));
-                        return 1;
-                    }
-                };
-            let tikv_output =
-                match query_tsv_with_pool(pool.as_ref().expect("pool must exist"), &tikv_sql).await
-                {
-                    Ok(value) => normalize_query_output(&value),
-                    Err(err) => {
-                        print_stderr_log(&format!(
-                            "[check] failed target={} variant=tikv sql={:?} error={}",
-                            format_table_target(&args.conn.database, table_name),
-                            tikv_sql,
-                            err
-                        ));
-                        return 1;
-                    }
-                };
-            if normal_output != tikv_output {
-                let target = format_table_target(&args.conn.database, table_name);
-                print_stderr_log(&format!("[check] mismatch target={target} {round_detail}"));
-                print_stderr_log("[check] normal result:");
-                print_stderr_log(&format!(
-                    "tici: {}",
-                    if normal_output.is_empty() {
-                        "<empty>"
-                    } else {
-                        &normal_output
-                    }
-                ));
-                print_stderr_log("[check] tikv result:");
-                print_stderr_log(&format!(
-                    "tikv: {}",
-                    if tikv_output.is_empty() {
-                        "<empty>"
-                    } else {
-                        &tikv_output
-                    }
-                ));
-                return 1;
-            }
-            print_stdout_log(&format!(
-                "[check] match target={} {}",
-                format_table_target(&args.conn.database, table_name),
-                normal_output
-            ));
-        }
-    }
-    0
-}
-
 fn to_insert_args(args: &InsertCliArgs) -> InsertArgs {
     InsertArgs {
         csv_file: args.csv_file.clone(),
@@ -711,6 +431,42 @@ fn to_insert_args(args: &InsertCliArgs) -> InsertArgs {
     }
 }
 
+fn to_query_conn_args(args: &CommonConnArgs) -> QueryConnArgs {
+    QueryConnArgs {
+        host: args.host.clone(),
+        port: args.port,
+        user: args.user.clone(),
+        password: args.password.clone(),
+        database: args.database.clone(),
+        mysql_bin: args.mysql_bin.clone(),
+        conn_pool_size: args.conn_pool_size,
+        dry_run: args.dry_run,
+    }
+}
+
+fn to_query_table_args(args: &QueryArgs) -> QueryTableArgs {
+    QueryTableArgs {
+        conn: to_query_conn_args(&args.conn),
+        table: args.table.clone(),
+        count: args.count,
+        table_offset: args.table_offset,
+        sql: args.sql.clone(),
+        tikv: args.tikv,
+        query_loop_count: args.query_loop_count,
+    }
+}
+
+fn to_check_table_args(args: &CheckArgs) -> CheckTableArgs {
+    CheckTableArgs {
+        conn: to_query_conn_args(&args.conn),
+        table: args.table.clone(),
+        count: args.count,
+        table_offset: args.table_offset,
+        sql: args.sql.clone(),
+        query_loop_count: args.query_loop_count,
+    }
+}
+
 async fn run_auto(args: &AutoArgs) -> i32 {
     let tables = match build_table_names(
         &args.common.table,
@@ -732,7 +488,7 @@ async fn run_auto(args: &AutoArgs) -> i32 {
     let pool = if args.common.conn.dry_run {
         None
     } else {
-        match build_pool(&args.common.conn) {
+        match build_client(&args.common.conn).build_pool(args.common.conn.conn_pool_size) {
             Ok(pool) => Some(pool),
             Err(err) => {
                 print_stderr_log(&err);
@@ -740,17 +496,7 @@ async fn run_auto(args: &AutoArgs) -> i32 {
             }
         }
     };
-    let create_sqls = match tables
-        .iter()
-        .map(|table_name| {
-            Ok((
-                "create-table".to_string(),
-                format_table_target(&args.common.conn.database, table_name),
-                create_table_sql(&args.common.conn.database, table_name)?,
-            ))
-        })
-        .collect::<Result<Vec<_>, String>>()
-    {
+    let create_sqls = match build_create_table_items(&args.common.conn.database, &tables) {
         Ok(value) => value,
         Err(err) => {
             print_stderr_log(&err);
@@ -808,18 +554,13 @@ async fn main() {
                 &tables,
                 args.conn.dry_run,
             );
-            let sqls = tables
-                .iter()
-                .map(|table_name| {
-                    Ok((
-                        "create-table".to_string(),
-                        format_table_target(&args.conn.database, table_name),
-                        create_table_sql(&args.conn.database, table_name)?,
-                    ))
-                })
-                .collect::<Result<Vec<_>, String>>();
+            let sqls = build_create_table_items(&args.conn.database, &tables);
             match sqls {
-                Ok(items) => match build_optional_pool(&args.conn) {
+                Ok(items) => match build_optional_pool(
+                    &build_client(&args.conn),
+                    args.conn.conn_pool_size,
+                    args.conn.dry_run,
+                ) {
                     Ok(pool) => {
                         match run_sqls(pool.as_ref(), args.conn.dry_run, true, &items).await {
                             Ok(_) => 0,
@@ -854,18 +595,13 @@ async fn main() {
                 &tables,
                 args.conn.dry_run,
             );
-            let sqls = tables
-                .iter()
-                .map(|table_name| {
-                    Ok((
-                        "drop-table".to_string(),
-                        format_table_target(&args.conn.database, table_name),
-                        drop_table_sql(&args.conn.database, table_name)?,
-                    ))
-                })
-                .collect::<Result<Vec<_>, String>>();
+            let sqls = build_drop_table_items(&args.conn.database, &tables);
             match sqls {
-                Ok(items) => match build_optional_pool(&args.conn) {
+                Ok(items) => match build_optional_pool(
+                    &build_client(&args.conn),
+                    args.conn.conn_pool_size,
+                    args.conn.dry_run,
+                ) {
                     Ok(pool) => {
                         match run_sqls(pool.as_ref(), args.conn.dry_run, true, &items).await {
                             Ok(_) => 0,
@@ -920,7 +656,11 @@ async fn main() {
                 })
                 .collect::<Result<Vec<_>, String>>();
             match sqls {
-                Ok(items) => match build_optional_pool(&args.common.conn) {
+                Ok(items) => match build_optional_pool(
+                    &build_client(&args.common.conn),
+                    args.common.conn.conn_pool_size,
+                    args.common.conn.dry_run,
+                ) {
                     Ok(pool) => {
                         match run_sqls(pool.as_ref(), args.common.conn.dry_run, true, &items).await
                         {
@@ -971,7 +711,11 @@ async fn main() {
                 })
                 .collect::<Result<Vec<_>, String>>();
             match sqls {
-                Ok(items) => match build_optional_pool(&args.common.conn) {
+                Ok(items) => match build_optional_pool(
+                    &build_client(&args.common.conn),
+                    args.common.conn.conn_pool_size,
+                    args.common.conn.dry_run,
+                ) {
                     Ok(pool) => {
                         match run_sqls(pool.as_ref(), args.common.conn.dry_run, true, &items).await
                         {
@@ -1012,7 +756,11 @@ async fn main() {
                 format_table_target(&args.conn.database, &args.table),
                 sql,
             )];
-            match build_optional_pool(&args.conn) {
+            match build_optional_pool(
+                &build_client(&args.conn),
+                args.conn.conn_pool_size,
+                args.conn.dry_run,
+            ) {
                 Ok(pool) => match run_sqls(pool.as_ref(), args.conn.dry_run, false, &items).await {
                     Ok(_) => 0,
                     Err(err) => {
@@ -1026,8 +774,8 @@ async fn main() {
                 }
             }
         }
-        Commands::Query(args) => run_query(&args).await,
-        Commands::Check(args) => run_check(&args).await,
+        Commands::Query(args) => run_query(&to_query_table_args(&args)).await,
+        Commands::Check(args) => run_check(&to_check_table_args(&args)).await,
         Commands::InsertData(args) => run_insert_data(&to_insert_args(&args)).await,
         Commands::Auto(args) => run_auto(&args).await,
     };

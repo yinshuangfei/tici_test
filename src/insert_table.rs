@@ -1,10 +1,11 @@
 use crate::common::{
-    MysqlConfig, build_table_names, format_table_target, format_table_targets_summary,
-    normalize_delimiter, project_root, quote_identifier, quote_literal, resolve_project_path,
+    build_table_names, format_table_target, format_table_targets_summary, normalize_delimiter,
+    project_root, quote_identifier, quote_literal, resolve_project_path,
 };
 use crate::log::{
     append_progress_log, now_log_suffix, print_stderr_log, print_stdout_log, with_timestamp_suffix,
 };
+use crate::sql_pool::MysqlConfig;
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Params, Pool, Value};
 use std::fs::File;
