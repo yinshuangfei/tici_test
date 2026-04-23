@@ -1,5 +1,5 @@
 use clap::Parser;
-use tici_test_rust::common::{MysqlConfig, quote_identifier};
+use tici_test_rust::common::{MysqlConfig, print_stderr_log, quote_identifier};
 
 const DEFAULT_HOST: &str = "10.2.12.79";
 const DEFAULT_PORT: u16 = 9528;
@@ -44,7 +44,7 @@ fn main() {
     let sql = match build_query_sql(&cli.meta_table) {
         Ok(value) => value,
         Err(err) => {
-            eprintln!("{err}");
+            print_stderr_log(&err);
             std::process::exit(2);
         }
     };
@@ -62,7 +62,7 @@ fn main() {
         comments: true,
     };
     if let Err(err) = client.execute_cli_stdin(&sql, false) {
-        eprintln!("{err}");
+        print_stderr_log(&err);
         std::process::exit(1);
     }
 }

@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use tici_test_rust::common::resolve_project_path;
+use tici_test_rust::common::{print_stderr_log, resolve_project_path};
 
 #[derive(Parser, Debug)]
 #[command(about = "Analyze freshness_result_*.log files and print grouped statistics by file.")]
@@ -166,7 +166,7 @@ fn main() {
         let stats = match analyze_file(file_path) {
             Ok(value) => value,
             Err(err) => {
-                eprintln!("{err}");
+                print_stderr_log(&err);
                 std::process::exit(2);
             }
         };

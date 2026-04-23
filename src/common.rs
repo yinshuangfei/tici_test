@@ -115,6 +115,22 @@ pub fn append_progress_log(output_file: &Path, message: &str) -> Result<(), Stri
     writeln!(handle, "[{}] {}", timestamp_string(), message).map_err(|err| err.to_string())
 }
 
+pub fn format_stdout_log(message: &str) -> String {
+    format!("[{}] {}", timestamp_string(), message)
+}
+
+pub fn print_stdout_log(message: &str) {
+    println!("{}", format_stdout_log(message));
+}
+
+pub fn format_stderr_log(message: &str) -> String {
+    format!("[{}] {}", timestamp_string(), message)
+}
+
+pub fn print_stderr_log(message: &str) {
+    eprintln!("{}", format_stderr_log(message));
+}
+
 pub fn format_size(num_bytes: u64) -> String {
     let units = ["B", "KiB", "MiB", "GiB", "TiB"];
     let mut value = num_bytes as f64;

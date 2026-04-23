@@ -2,7 +2,8 @@ use clap::{Parser, Subcommand};
 use mysql_async::Pool;
 use tici_test_rust::common::{
     MysqlConfig, build_table_names, execute_sql_with_pool, format_table_target,
-    format_table_targets_summary, query_tsv_with_pool, quote_identifier, quote_literal,
+    format_table_targets_summary, print_stderr_log, print_stdout_log, query_tsv_with_pool,
+    quote_identifier, quote_literal,
 };
 use tici_test_rust::insert_logic::{
     DEFAULT_BATCH_SIZE, DEFAULT_CONN_POOL_SIZE, DEFAULT_CSV_FILE, DEFAULT_DATABASE, DEFAULT_HOST,
@@ -229,12 +230,12 @@ fn build_optional_pool(conn: &CommonConnArgs) -> Result<Option<Pool>, String> {
 fn print_command_summary(command: &str, database: &str, table_names: &[String], dry_run: bool) {
     let joined = format_table_targets_summary(database, table_names);
     let mode = if dry_run { "dry-run" } else { "execute" };
-    println!("[{command}] mode={mode} tables={joined}");
+    print_stdout_log(&format!("[{command}] mode={mode} tables={joined}"));
 }
 
 fn print_query_summary(command: &str, dry_run: bool) {
     let mode = if dry_run { "dry-run" } else { "execute" };
-    println!("[{command}] mode={mode}");
+    print_stdout_log(&format!("[{command}] mode={mode}"));
 }
 
 fn create_table_sql(database: &str, table_name: &str) -> Result<String, String> {
@@ -406,7 +407,7 @@ async fn run_sqls(
 
     if dry_run || !parallel || items.len() <= 1 {
         for (action, target, sql) in items {
-            println!("[{action}] target={target}");
+            print_stdout_log(&format!("[{action}] target={target}"));
             if dry_run {
                 println!("{sql}");
             } else {
@@ -414,7 +415,9 @@ async fn run_sqls(
                 match execute_sql_with_pool(pool, sql).await {
                     Ok(()) => {}
                     Err(err) if is_ignorable_add_index_error(action, &err) => {
-                        println!("[{action}] skip target={target} reason=index-exists");
+                        print_stdout_log(&format!(
+                            "[{action}] skip target={target} reason=index-exists"
+                        ));
                     }
                     Err(err) => {
                         return Err(format!(
@@ -426,7 +429,7 @@ async fn run_sqls(
         }
         return Ok(());
     }
-    println!("[sql] tasks={}", items.len());
+    print_stdout_log(&format!("[sql] tasks={}", items.len()));
     let pool = pool
         .ok_or_else(|| "missing connection pool".to_string())?
         .clone();
@@ -434,14 +437,16 @@ async fn run_sqls(
     for (action, target, sql) in items.iter().cloned() {
         let task_pool = pool.clone();
         join_set.spawn(async move {
-            println!("[{action}] target={target}");
+            print_stdout_log(&format!("[{action}] target={target}"));
             match execute_sql_with_pool(&task_pool, &sql).await {
                 Ok(()) => {
-                    println!("[{action}] done target={target}");
+                    print_stdout_log(&format!("[{action}] done target={target}"));
                     Ok(())
                 }
                 Err(err) if is_ignorable_add_index_error(&action, &err) => {
-                    println!("[{action}] skip target={target} reason=index-exists");
+                    print_stdout_log(&format!(
+                        "[{action}] skip target={target} reason=index-exists"
+                    ));
                     Ok(())
                 }
                 Err(err) => Err(format!(
@@ -468,18 +473,18 @@ async fn run_sqls(
 
 async fn run_query(args: &QueryArgs) -> i32 {
     if args.query_loop_count < 1 {
-        eprintln!("query loop count must be >= 1");
+        print_stderr_log("query loop count must be >= 1");
         return 2;
     }
     if args.count < 1 {
-        eprintln!("query table count must be >= 1");
+        print_stderr_log("query table count must be >= 1");
         return 2;
     }
     print_query_summary("query", args.conn.dry_run);
     let tables = match build_table_names(&args.table, args.count, args.table_offset) {
         Ok(value) => value,
         Err(err) => {
-            eprintln!("{err}");
+            print_stderr_log(&err);
             return 2;
         }
     };
@@ -490,14 +495,14 @@ async fn run_query(args: &QueryArgs) -> i32 {
         match build_pool(&args.conn) {
             Ok(pool) => Some(pool),
             Err(err) => {
-                eprintln!("{err}");
+                print_stderr_log(&err);
                 return 1;
             }
         }
     };
     let mut statements = Vec::new();
     for round in 1..=args.query_loop_count {
-        println!("[query] round={round}/{}", args.query_loop_count);
+        print_stdout_log(&format!("[query] round={round}/{}", args.query_loop_count));
         for (table_idx, table_name) in tables.iter().enumerate() {
             statements.push((
                 "query".to_string(),
@@ -520,11 +525,13 @@ async fn run_query(args: &QueryArgs) -> i32 {
                 match query_tsv_with_pool(pool, sql).await {
                     Ok(output) => {
                         if !output.is_empty() {
-                            println!("[query] target={target}, {output}");
+                            print_stdout_log(&format!("[query] target={target}, {output}"));
                         }
                     }
                     Err(err) => {
-                        eprintln!("[query] failed target={target} sql={sql:?} error={err}");
+                        print_stderr_log(&format!(
+                            "[query] failed target={target} sql={sql:?} error={err}"
+                        ));
                         return 1;
                     }
                 }
@@ -532,7 +539,7 @@ async fn run_query(args: &QueryArgs) -> i32 {
         }
         return 0;
     }
-    println!("[query] tasks={}", statements.len());
+    print_stdout_log(&format!("[query] tasks={}", statements.len()));
     let pool = pool.expect("pool must exist");
     let mut join_set = JoinSet::new();
     for (_, target, sql) in statements {
@@ -546,7 +553,7 @@ async fn run_query(args: &QueryArgs) -> i32 {
         let (target, sql, output) = match result {
             Ok(value) => value,
             Err(err) => {
-                eprintln!("[query] task join failed error={err}");
+                print_stderr_log(&format!("[query] task join failed error={err}"));
                 return 1;
             }
         };
@@ -555,10 +562,12 @@ async fn run_query(args: &QueryArgs) -> i32 {
                 if !value.is_empty() {
                     println!("{value}");
                 }
-                println!("[query] done target={target}");
+                print_stdout_log(&format!("[query] done target={target}"));
             }
             Err(err) => {
-                eprintln!("[query] failed target={target} sql={sql:?} error={err}");
+                print_stderr_log(&format!(
+                    "[query] failed target={target} sql={sql:?} error={err}"
+                ));
                 return 1;
             }
         }
@@ -568,13 +577,13 @@ async fn run_query(args: &QueryArgs) -> i32 {
 
 async fn run_check(args: &CheckArgs) -> i32 {
     if args.query_loop_count < 1 {
-        eprintln!("check loop count must be >= 1");
+        print_stderr_log("check loop count must be >= 1");
         return 2;
     }
     let tables = match build_table_names(&args.table, args.count, args.table_offset) {
         Ok(value) => value,
         Err(err) => {
-            eprintln!("{err}");
+            print_stderr_log(&err);
             return 2;
         }
     };
@@ -586,14 +595,14 @@ async fn run_check(args: &CheckArgs) -> i32 {
         match build_pool(&args.conn) {
             Ok(pool) => Some(pool),
             Err(err) => {
-                eprintln!("{err}");
+                print_stderr_log(&err);
                 return 1;
             }
         }
     };
     for round in 1..=args.query_loop_count {
         let round_detail = format!("round={round}/{}", args.query_loop_count);
-        println!("[check] {round_detail}");
+        print_stdout_log(&format!("[check] {round_detail}"));
         for (table_idx, table_name) in tables.iter().enumerate() {
             let normal_sql = build_query_sql(
                 &args.conn.database,
@@ -610,9 +619,9 @@ async fn run_check(args: &CheckArgs) -> i32 {
                 true,
             );
             if args.conn.dry_run {
-                println!("[check] variant=normal");
+                print_stdout_log("[check] variant=normal");
                 println!("{normal_sql}");
-                println!("[check] variant=tikv");
+                print_stdout_log("[check] variant=tikv");
                 println!("{tikv_sql}");
                 continue;
             }
@@ -622,12 +631,12 @@ async fn run_check(args: &CheckArgs) -> i32 {
                 {
                     Ok(value) => normalize_query_output(&value),
                     Err(err) => {
-                        eprintln!(
+                        print_stderr_log(&format!(
                             "[check] failed target={} variant=normal sql={:?} error={}",
                             format_table_target(&args.conn.database, table_name),
                             normal_sql,
                             err
-                        );
+                        ));
                         return 1;
                     }
                 };
@@ -636,43 +645,43 @@ async fn run_check(args: &CheckArgs) -> i32 {
                 {
                     Ok(value) => normalize_query_output(&value),
                     Err(err) => {
-                        eprintln!(
+                        print_stderr_log(&format!(
                             "[check] failed target={} variant=tikv sql={:?} error={}",
                             format_table_target(&args.conn.database, table_name),
                             tikv_sql,
                             err
-                        );
+                        ));
                         return 1;
                     }
                 };
             if normal_output != tikv_output {
                 let target = format_table_target(&args.conn.database, table_name);
-                eprintln!("[check] mismatch target={target} {round_detail}");
-                eprintln!("[check] normal result:");
-                eprintln!(
+                print_stderr_log(&format!("[check] mismatch target={target} {round_detail}"));
+                print_stderr_log("[check] normal result:");
+                print_stderr_log(&format!(
                     "tici: {}",
                     if normal_output.is_empty() {
                         "<empty>"
                     } else {
                         &normal_output
                     }
-                );
-                eprintln!("[check] tikv result:");
-                eprintln!(
+                ));
+                print_stderr_log("[check] tikv result:");
+                print_stderr_log(&format!(
                     "tikv: {}",
                     if tikv_output.is_empty() {
                         "<empty>"
                     } else {
                         &tikv_output
                     }
-                );
+                ));
                 return 1;
             }
-            println!(
+            print_stdout_log(&format!(
                 "[check] match target={} {}",
                 format_table_target(&args.conn.database, table_name),
                 normal_output
-            );
+            ));
         }
     }
     0
@@ -710,7 +719,7 @@ async fn run_auto(args: &AutoArgs) -> i32 {
     ) {
         Ok(value) => value,
         Err(err) => {
-            eprintln!("{err}");
+            print_stderr_log(&err);
             return 2;
         }
     };
@@ -726,7 +735,7 @@ async fn run_auto(args: &AutoArgs) -> i32 {
         match build_pool(&args.common.conn) {
             Ok(pool) => Some(pool),
             Err(err) => {
-                eprintln!("{err}");
+                print_stderr_log(&err);
                 return 1;
             }
         }
@@ -744,7 +753,7 @@ async fn run_auto(args: &AutoArgs) -> i32 {
     {
         Ok(value) => value,
         Err(err) => {
-            eprintln!("{err}");
+            print_stderr_log(&err);
             return 2;
         }
     };
@@ -766,16 +775,16 @@ async fn run_auto(args: &AutoArgs) -> i32 {
     {
         Ok(value) => value,
         Err(err) => {
-            eprintln!("{err}");
+            print_stderr_log(&err);
             return 2;
         }
     };
     if let Err(err) = run_sqls(pool.as_ref(), args.common.conn.dry_run, true, &create_sqls).await {
-        eprintln!("{err}");
+        print_stderr_log(&err);
         return 1;
     }
     if let Err(err) = run_sqls(pool.as_ref(), args.common.conn.dry_run, true, &index_sqls).await {
-        eprintln!("{err}");
+        print_stderr_log(&err);
         return 1;
     }
     0
@@ -789,7 +798,7 @@ async fn main() {
             let tables = match build_table_names(&args.table, args.count, args.table_offset) {
                 Ok(value) => value,
                 Err(err) => {
-                    eprintln!("{err}");
+                    print_stderr_log(&err);
                     std::process::exit(2);
                 }
             };
@@ -815,18 +824,18 @@ async fn main() {
                         match run_sqls(pool.as_ref(), args.conn.dry_run, true, &items).await {
                             Ok(_) => 0,
                             Err(err) => {
-                                eprintln!("{err}");
+                                print_stderr_log(&err);
                                 1
                             }
                         }
                     }
                     Err(err) => {
-                        eprintln!("{err}");
+                        print_stderr_log(&err);
                         1
                     }
                 },
                 Err(err) => {
-                    eprintln!("{err}");
+                    print_stderr_log(&err);
                     1
                 }
             }
@@ -835,7 +844,7 @@ async fn main() {
             let tables = match build_table_names(&args.table, args.count, args.table_offset) {
                 Ok(value) => value,
                 Err(err) => {
-                    eprintln!("{err}");
+                    print_stderr_log(&err);
                     std::process::exit(2);
                 }
             };
@@ -861,18 +870,18 @@ async fn main() {
                         match run_sqls(pool.as_ref(), args.conn.dry_run, true, &items).await {
                             Ok(_) => 0,
                             Err(err) => {
-                                eprintln!("{err}");
+                                print_stderr_log(&err);
                                 1
                             }
                         }
                     }
                     Err(err) => {
-                        eprintln!("{err}");
+                        print_stderr_log(&err);
                         1
                     }
                 },
                 Err(err) => {
-                    eprintln!("{err}");
+                    print_stderr_log(&err);
                     1
                 }
             }
@@ -885,7 +894,7 @@ async fn main() {
             ) {
                 Ok(value) => value,
                 Err(err) => {
-                    eprintln!("{err}");
+                    print_stderr_log(&err);
                     std::process::exit(2);
                 }
             };
@@ -917,18 +926,18 @@ async fn main() {
                         {
                             Ok(_) => 0,
                             Err(err) => {
-                                eprintln!("{err}");
+                                print_stderr_log(&err);
                                 1
                             }
                         }
                     }
                     Err(err) => {
-                        eprintln!("{err}");
+                        print_stderr_log(&err);
                         1
                     }
                 },
                 Err(err) => {
-                    eprintln!("{err}");
+                    print_stderr_log(&err);
                     1
                 }
             }
@@ -941,7 +950,7 @@ async fn main() {
             ) {
                 Ok(value) => value,
                 Err(err) => {
-                    eprintln!("{err}");
+                    print_stderr_log(&err);
                     std::process::exit(2);
                 }
             };
@@ -968,18 +977,18 @@ async fn main() {
                         {
                             Ok(_) => 0,
                             Err(err) => {
-                                eprintln!("{err}");
+                                print_stderr_log(&err);
                                 1
                             }
                         }
                     }
                     Err(err) => {
-                        eprintln!("{err}");
+                        print_stderr_log(&err);
                         1
                     }
                 },
                 Err(err) => {
-                    eprintln!("{err}");
+                    print_stderr_log(&err);
                     1
                 }
             }
@@ -988,7 +997,7 @@ async fn main() {
             let sql = match import_into_sql(&args) {
                 Ok(value) => value,
                 Err(err) => {
-                    eprintln!("{err}");
+                    print_stderr_log(&err);
                     std::process::exit(2);
                 }
             };
@@ -1007,12 +1016,12 @@ async fn main() {
                 Ok(pool) => match run_sqls(pool.as_ref(), args.conn.dry_run, false, &items).await {
                     Ok(_) => 0,
                     Err(err) => {
-                        eprintln!("{err}");
+                        print_stderr_log(&err);
                         1
                     }
                 },
                 Err(err) => {
-                    eprintln!("{err}");
+                    print_stderr_log(&err);
                     1
                 }
             }

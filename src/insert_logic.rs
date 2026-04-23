@@ -1,7 +1,8 @@
 use crate::common::{
     MysqlConfig, append_progress_log, build_table_names, format_table_target,
-    format_table_targets_summary, normalize_delimiter, now_log_suffix, project_root,
-    quote_identifier, quote_literal, resolve_project_path, with_timestamp_suffix,
+    format_table_targets_summary, normalize_delimiter, now_log_suffix, print_stderr_log,
+    print_stdout_log, project_root, quote_identifier, quote_literal, resolve_project_path,
+    with_timestamp_suffix,
 };
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Params, Pool, Value};
@@ -198,13 +199,17 @@ pub fn resolve_freshness_batch(args: &InsertArgs) -> usize {
 
 fn emit_log(message: &str, output_file: Option<&Path>, stderr: bool) {
     if stderr {
-        eprintln!("{message}");
+        print_stderr_log(message);
     } else {
-        println!("{message}");
+        print_stdout_log(message);
     }
     if let Some(path) = output_file {
         let _ = append_progress_log(path, message);
     }
+}
+
+fn append_log_only(output_file: &Path, message: &str) {
+    let _ = append_progress_log(output_file, message);
 }
 
 fn parse_row(raw_row: &csv::StringRecord, line_number: usize) -> Result<InsertRow, String> {
@@ -421,14 +426,14 @@ fn emit_aggregate_import_progress(tracker: &Arc<Mutex<ImportProgressTracker>>) {
             )
         })
         .unwrap_or_else(|| "-".to_string());
-    println!(
+    print_stdout_log(&format!(
         "[insert-data] progress tables={} done={} running={} rows={} rate={:.0} rows/s elapsed={elapsed:.1}s slowest={slowest}",
         tracker.total_tables,
         completed_tables,
         running_tables,
         format_progress_ratio(imported_rows, tracker.total_rows),
         rate
-    );
+    ));
 }
 
 fn emit_aggregate_freshness_progress(tracker: &Arc<Mutex<FreshnessProgressTracker>>) {
@@ -468,14 +473,14 @@ fn emit_aggregate_freshness_progress(tracker: &Arc<Mutex<FreshnessProgressTracke
             )
         })
         .unwrap_or_else(|| "-".to_string());
-    println!(
+    print_stdout_log(&format!(
         "[insert-data] freshness tables={} reached={} waiting={} visible_rows={} rate={:.0} rows/s elapsed={elapsed:.1}s slowest={slowest}",
         tracker.total_tables,
         reached_tables,
         waiting_tables,
         format_progress_ratio(visible_rows, tracker.total_rows),
         rate
-    );
+    ));
 }
 
 fn update_import_progress_imported(handle: &ImportProgressHandle, imported_rows: usize) {
@@ -548,6 +553,8 @@ async fn run_insert_tasks_tokio(
             .map(|handle| handle.tracker.clone())
     });
     let (progress_stop_tx, mut progress_stop_rx) = watch::channel(false);
+    let import_progress_tracker_for_task = import_progress_tracker.clone();
+    let freshness_progress_tracker_for_task = freshness_progress_tracker.clone();
     let progress_task = if import_progress_tracker.is_some() || freshness_progress_tracker.is_some()
     {
         if print_interval > 0.0 {
@@ -555,15 +562,15 @@ async fn run_insert_tasks_tokio(
                 loop {
                     tokio::select! {
                         _ = sleep(Duration::from_secs_f64(print_interval)) => {
-                            let import_finished = import_progress_tracker.as_ref().is_none_or(|tracker| {
+                            let import_finished = import_progress_tracker_for_task.as_ref().is_none_or(|tracker| {
                                 let tracker = tracker.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                                 tracker.table_states.iter().all(|state| state.finished)
                             });
                             if !import_finished {
-                                if let Some(tracker) = import_progress_tracker.as_ref() {
+                                if let Some(tracker) = import_progress_tracker_for_task.as_ref() {
                                     emit_aggregate_import_progress(tracker);
                                 }
-                            } else if let Some(tracker) = freshness_progress_tracker.as_ref() {
+                            } else if let Some(tracker) = freshness_progress_tracker_for_task.as_ref() {
                                 let any_waiting = {
                                     let tracker = tracker.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                                     tracker.table_states.iter().any(|state| state.waiting || state.finished)
@@ -612,6 +619,23 @@ async fn run_insert_tasks_tokio(
             }
         }
     }
+    if let Some(tracker) = import_progress_tracker.as_ref() {
+        emit_aggregate_import_progress(tracker);
+    }
+    if let Some(tracker) = freshness_progress_tracker.as_ref() {
+        let any_waiting = {
+            let tracker = tracker
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            tracker
+                .table_states
+                .iter()
+                .any(|state| state.waiting || state.finished)
+        };
+        if any_waiting {
+            emit_aggregate_freshness_progress(tracker);
+        }
+    }
     let _ = progress_stop_tx.send(true);
     if let Some(progress_task) = progress_task {
         let _ = progress_task.await;
@@ -630,7 +654,7 @@ async fn run_insert_batches_for_table(input: &TableRunArgs) -> Result<InsertExec
         let pool = match input.pool.as_ref() {
             Some(pool) => pool,
             None => {
-                eprintln!("database operation failed: missing connection pool");
+                print_stderr_log("database operation failed: missing connection pool");
                 return Err(1);
             }
         };
@@ -638,7 +662,7 @@ async fn run_insert_batches_for_table(input: &TableRunArgs) -> Result<InsertExec
             let mut conn = match pool.get_conn().await {
                 Ok(conn) => conn,
                 Err(err) => {
-                    eprintln!("database operation failed: {}", err);
+                    print_stderr_log(&format!("database operation failed: {}", err));
                     return Err(1);
                 }
             };
@@ -646,12 +670,12 @@ async fn run_insert_batches_for_table(input: &TableRunArgs) -> Result<InsertExec
                 Ok(sql) => match fetch_count(&mut conn, &sql, &target_name).await {
                     Ok(value) => baseline_row_count = value,
                     Err(err) => {
-                        eprintln!("{err}");
+                        print_stderr_log(&err);
                         return Err(1);
                     }
                 },
                 Err(err) => {
-                    eprintln!("{err}");
+                    print_stderr_log(&err);
                     return Err(1);
                 }
             }
@@ -664,14 +688,14 @@ async fn run_insert_batches_for_table(input: &TableRunArgs) -> Result<InsertExec
         let pool = match input.pool.as_ref() {
             Some(pool) => pool,
             None => {
-                eprintln!("database operation failed: missing connection pool");
+                print_stderr_log("database operation failed: missing connection pool");
                 return Err(1);
             }
         };
         match reconnect_pooled_conn(pool).await {
             Ok(conn) => Some(conn),
             Err(err) => {
-                eprintln!("database operation failed: {err}");
+                print_stderr_log(&format!("database operation failed: {err}"));
                 return Err(1);
             }
         }
@@ -682,7 +706,7 @@ async fn run_insert_batches_for_table(input: &TableRunArgs) -> Result<InsertExec
             match build_insert_sql(&input.args.database, &input.args.table, batch) {
                 Ok(sql) => println!("{sql}"),
                 Err(err) => {
-                    eprintln!("{err}");
+                    print_stderr_log(&err);
                     return Err(2);
                 }
             }
@@ -694,7 +718,7 @@ async fn run_insert_batches_for_table(input: &TableRunArgs) -> Result<InsertExec
             {
                 Some(params) => params.clone(),
                 None => {
-                    eprintln!("database operation failed: missing parameterized batches");
+                    print_stderr_log("database operation failed: missing parameterized batches");
                     return Err(1);
                 }
             };
@@ -705,7 +729,7 @@ async fn run_insert_batches_for_table(input: &TableRunArgs) -> Result<InsertExec
             ) {
                 Ok(value) => value,
                 Err(err) => {
-                    eprintln!("{err}");
+                    print_stderr_log(&err);
                     return Err(2);
                 }
             };
@@ -714,7 +738,7 @@ async fn run_insert_batches_for_table(input: &TableRunArgs) -> Result<InsertExec
                 let pool = match input.pool.as_ref() {
                     Some(pool) => pool,
                     None => {
-                        eprintln!("database operation failed: missing connection pool");
+                        print_stderr_log("database operation failed: missing connection pool");
                         return Err(1);
                     }
                 };
@@ -722,7 +746,7 @@ async fn run_insert_batches_for_table(input: &TableRunArgs) -> Result<InsertExec
                     insert_conn = match reconnect_pooled_conn(pool).await {
                         Ok(conn) => Some(conn),
                         Err(err) => {
-                            eprintln!("database operation failed: {err}");
+                            print_stderr_log(&format!("database operation failed: {err}"));
                             return Err(1);
                         }
                     };
@@ -767,7 +791,7 @@ async fn run_insert_batches_for_table(input: &TableRunArgs) -> Result<InsertExec
     }
 
     if imported_rows == 0 {
-        println!("[{target_name}] no data rows found");
+        print_stdout_log(&format!("[{target_name}] no data rows found"));
         if let Some(progress) = input.import_progress.as_ref() {
             mark_import_progress_finished(progress, imported_rows);
         }
@@ -781,11 +805,7 @@ async fn run_insert_batches_for_table(input: &TableRunArgs) -> Result<InsertExec
     let elapsed = started_at.elapsed().as_secs_f64();
     let completed_message =
         format!("[{target_name}] completed import {imported_rows} rows in {elapsed:.1}s");
-    emit_log(
-        &completed_message,
-        Some(&input.logs.insert_result_log),
-        false,
-    );
+    append_log_only(&input.logs.insert_result_log, &completed_message);
     if let Some(progress) = input.import_progress.as_ref() {
         mark_import_progress_finished(progress, imported_rows);
     }
@@ -808,7 +828,7 @@ async fn wait_freshness_for_table(
     let pool = match input.pool.as_ref() {
         Some(pool) => pool,
         None => {
-            eprintln!("database operation failed: missing connection pool");
+            print_stderr_log("database operation failed: missing connection pool");
             return Err(1);
         }
     };
@@ -833,7 +853,7 @@ async fn wait_freshness_for_table(
             let mut conn = match pool.get_conn().await {
                 Ok(value) => value,
                 Err(err) => {
-                    eprintln!("database operation failed: {}", err);
+                    print_stderr_log(&format!("database operation failed: {}", err));
                     return Err(1);
                 }
             };
@@ -841,12 +861,12 @@ async fn wait_freshness_for_table(
                 Ok(sql) => match fetch_count(&mut conn, &sql, &execution.target_name).await {
                     Ok(value) => value,
                     Err(err) => {
-                        eprintln!("{err}");
+                        print_stderr_log(&err);
                         return Err(1);
                     }
                 },
                 Err(err) => {
-                    eprintln!("{err}");
+                    print_stderr_log(&err);
                     return Err(1);
                 }
             }
@@ -908,43 +928,43 @@ pub async fn run_insert_data(args: &InsertArgs) -> i32 {
     let mut args = args.clone();
     let freshness_batch = resolve_freshness_batch(&args);
     if args.batch_size < 1 {
-        eprintln!("batch size must be >= 1");
+        print_stderr_log("batch size must be >= 1");
         return 2;
     }
     if freshness_batch < 1 {
-        eprintln!("freshness batch must be >= 1");
+        print_stderr_log("freshness batch must be >= 1");
         return 2;
     }
     if args.count < 1 {
-        eprintln!("table count must be >= 1");
+        print_stderr_log("table count must be >= 1");
         return 2;
     }
     if args.row_limit == usize::MAX {
-        eprintln!("row limit must be >= 0");
+        print_stderr_log("row limit must be >= 0");
         return 2;
     }
     if args.freshness && args.row_limit > 0 && freshness_batch > args.row_limit {
-        eprintln!("freshness batch must be <= row limit");
+        print_stderr_log("freshness batch must be <= row limit");
         return 2;
     }
     if args.print_interval < 0.0 {
-        eprintln!("print interval must be >= 0");
+        print_stderr_log("print interval must be >= 0");
         return 2;
     }
     if args.conn_pool_size < 1 {
-        eprintln!("conn pool size must be >= 1");
+        print_stderr_log("conn pool size must be >= 1");
         return 2;
     }
     let csv_path = resolve_project_path(&args.csv_file);
     if !csv_path.is_file() {
-        eprintln!("csv file not found: {}", csv_path.display());
+        print_stderr_log(&format!("csv file not found: {}", csv_path.display()));
         return 2;
     }
     if args.encoding.to_lowercase() != "utf-8" {
-        eprintln!(
+        print_stderr_log(&format!(
             "failed to decode csv file with encoding {}: only utf-8 is supported in rust version",
             args.encoding
-        );
+        ));
         return 2;
     }
 
@@ -953,14 +973,16 @@ pub async fn run_insert_data(args: &InsertArgs) -> i32 {
     let table_names = match build_table_names(&args.table, args.count, args.table_offset) {
         Ok(value) => value,
         Err(err) => {
-            eprintln!("{err}");
+            print_stderr_log(&err);
             return 2;
         }
     };
     if table_names.len() > 1 {
         let joined_targets = format_table_targets_summary(&args.database, &table_names);
         let mode = if args.dry_run { "dry-run" } else { "execute" };
-        println!("[insert-data] mode={mode} tables={joined_targets}");
+        print_stdout_log(&format!(
+            "[insert-data] mode={mode} tables={joined_targets}"
+        ));
     }
 
     let pool = if args.dry_run {
@@ -969,7 +991,7 @@ pub async fn run_insert_data(args: &InsertArgs) -> i32 {
         match build_mysql_config(&args).build_pool(args.conn_pool_size) {
             Ok(pool) => Some(Arc::new(pool)),
             Err(err) => {
-                eprintln!("database operation failed: {err}");
+                print_stderr_log(&format!("database operation failed: {err}"));
                 return 1;
             }
         }
@@ -978,13 +1000,13 @@ pub async fn run_insert_data(args: &InsertArgs) -> i32 {
     let logs = InsertLogs::new();
     for (batch_index, (row_offset, row_limit)) in row_windows.iter().enumerate() {
         if row_windows.len() > 1 {
-            println!(
+            print_stdout_log(&format!(
                 "[insert-data] freshness-batch {}/{} row_offset={} row_limit={}",
                 batch_index + 1,
                 row_windows.len(),
                 row_offset,
                 row_limit
-            );
+            ));
         }
 
         let delimiter = normalize_delimiter(&args.delimiter);
@@ -999,7 +1021,7 @@ pub async fn run_insert_data(args: &InsertArgs) -> i32 {
         ) {
             Ok(value) => Arc::new(value),
             Err(err) => {
-                eprintln!("{err}");
+                print_stderr_log(&err);
                 return 2;
             }
         };
@@ -1092,7 +1114,7 @@ pub async fn run_insert_data(args: &InsertArgs) -> i32 {
             continue;
         }
 
-        println!("[insert-data] tasks={}", table_runs.len());
+        print_stdout_log(&format!("[insert-data] tasks={}", table_runs.len()));
         let exit_code = run_insert_tasks_tokio(
             table_runs,
             args.database.clone(),

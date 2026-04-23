@@ -96,7 +96,7 @@ INSERT INTO test.hdfs_log (`timestamp`, `severity_text`, `body`, `tenant_id`) VA
 - 同一个表级导入任务在批次连续成功时会复用同一个数据库连接，而不是每个 batch 都重新从连接池取一次连接
 - 当单批次插入失败时，程序会对该批次最多重试 10 次，每次重试前通过非阻塞 `tokio::time::sleep` 等待 1 秒，并重新建立数据库连接
 - 插入重试日志和最终失败日志除了输出到标准错误外，还会追加写入项目根目录下的 `log/insert_error.log`
-- 导入结束后的 `completed import` 日志除了输出到标准输出外，还会追加写入项目根目录下的 `log/insert_result.log`
+- 导入结束后的 `completed import` 日志会追加写入项目根目录下的 `log/insert_result.log`，但不会输出到标准输出
 - 默认开启 freshness 检查；当未指定 `--no-freshness` 时，程序会在导入前先查询一次当前目标表总行数，记为基线值
 - 导入结束后，如果未指定 `--no-freshness`，则循环执行：
 ```
@@ -112,6 +112,7 @@ SELECT COUNT(*) FROM <table> WHERE fts_match_word('china',body) OR NOT fts_match
 - 当目标表数量大于 1 且不是 `--dry-run` 时，Rust 版本会按 freshness window 输出聚合进度总览；导入阶段会输出总表数、已完成表数、运行中表数、累计导入行数、总目标行数和整体吞吐
 - 当导入阶段结束并进入 freshness 等待后，Rust 版本会继续按相同节奏输出 freshness 聚合进度总览，包括总表数、已达成表数、等待中表数、当前可见行数、总目标行数和整体可见性推进速率
 - `--print-interval` 控制导入阶段和 freshness 阶段聚合进度总览的输出间隔，默认 `3` 秒
+- Rust 版本中的 stdout 和 stderr 日志会带时间戳前缀；原始 SQL 文本和查询结果输出保持原样，不额外加前缀
 - 导入结束后，输出当前表名、最终总导入行数和总耗时
 - 当 CSV 文件不存在、解码失败、列数不正确、整数转换失败时，脚本直接报错退出
 - 当 CSV 中没有有效数据行时，输出带表名的 `no data rows found`

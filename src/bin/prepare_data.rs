@@ -6,7 +6,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
-use tici_test_rust::common::{format_size, resolve_project_path};
+use tici_test_rust::common::{format_size, print_stderr_log, resolve_project_path};
 
 const DEFAULT_OUTPUT_DIR: &str = "data";
 const DEFAULT_TIMEOUT: f64 = 30.0;
@@ -245,29 +245,29 @@ fn convert_to_csv(cli: &Cli, input_file: &Path) -> Result<(), String> {
 fn main() {
     let cli = Cli::parse();
     if cli.timeout <= 0.0 {
-        eprintln!("timeout must be > 0");
+        print_stderr_log("timeout must be > 0");
         std::process::exit(2);
     }
     if cli.progress_interval < 0.0 {
-        eprintln!("progress interval must be >= 0");
+        print_stderr_log("progress interval must be >= 0");
         std::process::exit(2);
     }
     if cli.chunk_size < 1 {
-        eprintln!("chunk size must be >= 1");
+        print_stderr_log("chunk size must be >= 1");
         std::process::exit(2);
     }
     if cli.convert_batch_size < 1 {
-        eprintln!("convert batch size must be >= 1");
+        print_stderr_log("convert batch size must be >= 1");
         std::process::exit(2);
     }
     if !cli.download && cli.convert_out.is_empty() {
-        eprintln!("at least one action is required: use --download and/or --convert-out");
+        print_stderr_log("at least one action is required: use --download and/or --convert-out");
         std::process::exit(2);
     }
     let output_file = match build_output_file(&cli) {
         Ok(value) => value,
         Err(err) => {
-            eprintln!("{err}");
+            print_stderr_log(&err);
             std::process::exit(2);
         }
     };
@@ -287,13 +287,13 @@ fn main() {
     }
     if cli.download {
         if let Err(err) = download_file(&cli, &output_file) {
-            eprintln!("download failed: {err}");
+            print_stderr_log(&format!("download failed: {err}"));
             std::process::exit(2);
         }
     }
     if !cli.convert_out.is_empty() {
         if let Err(err) = convert_to_csv(&cli, &input_file) {
-            eprintln!("download failed: {err}");
+            print_stderr_log(&format!("download failed: {err}"));
             std::process::exit(2);
         }
     }
