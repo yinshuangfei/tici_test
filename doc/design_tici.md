@@ -1,6 +1,7 @@
 # 功能设计
 ## 文件
 - tici.py
+- src/bin/tici.rs
 
 ## 要求
 - 修改代码的同时，同步更新 README.md 和对应的设计文档
@@ -13,11 +14,12 @@
 
 ## 入口说明
 - 主脚本文件为 `tici.py`
+- Rust 对应实现位于 `src/bin/tici.rs`
 - 命令行默认无参数时直接执行默认查询
 - 支持通过参数覆盖连接信息和目标元数据表
 
 ### 数据库基础功能
-- 默认连接参数为 `mysql --comments --host 10.2.12.81 --port 9529 -u root`
+- 默认连接参数为 `mysql --comments --host 10.2.12.79 --port 9528 -u root`
 - 支持通过 `--host`、`--port`、`--user`、`--password`、`--database`、`--mysql-bin` 传入连接信息
 
 ### 元数据查询

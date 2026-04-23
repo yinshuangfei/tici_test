@@ -1,6 +1,7 @@
 # 功能设计
 ## 文件
 - prepare_data.py
+- src/bin/prepare_data.rs
 
 ## 要求
 - 修改代码的同时，同步更新 README.md 和对应的设计文档
@@ -15,6 +16,7 @@
 
 ## 实现细节
 - 脚本文件为 `prepare_data.py`
+- Rust 对应实现位于 `src/bin/prepare_data.rs`
 - 当前阶段以“下载文件”为主要功能，先搭好 CLI 和下载执行框架
 - 命令行默认无参数时输出 help 信息
 - 默认下载地址为：
@@ -67,3 +69,5 @@ https://quickwit-datasets-public.s3.amazonaws.com/hdfs-logs-multitenants.json.gz
 - 参考 `~/pingcap/tici/ci/read_hdfs.py` 中的 HDFS 日志读取和 CSV 输出方式
 - 当 URL 无法推断文件名且未指定 `--output-file` 时，脚本直接报错退出
 - 当参数非法、网络请求失败、文件写入失败时，脚本直接报错退出
+- Rust 版本通过 `reqwest` 阻塞客户端下载，通过 `flate2` 处理 `.gz` 输入，并保持与 Python 版本相同的 CLI 结构
+- Rust 版本中的相对 `--output-dir`、`--input-file` 和 `--convert-out` 路径按项目根目录解析，因此从子目录执行命令时，读写位置仍然稳定落在项目根下

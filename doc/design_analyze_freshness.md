@@ -1,6 +1,7 @@
 # 功能设计
 ## 文件
 - analyze_freshness.py
+- src/bin/analyze_freshness.rs
 
 ## 要求
 - 修改代码的同时，同步更新 README.md 和对应的设计文档
@@ -16,6 +17,7 @@
 
 ## 实现细节
 - 脚本文件为 `analyze_freshness.py`
+- Rust 对应实现位于 `src/bin/analyze_freshness.rs`
 - 命令行默认无参数时直接执行统计，默认扫描 `log/` 目录
 - 支持的可选参数如下：
   - `--log-dir`，默认 `log`
@@ -58,3 +60,4 @@
 | group-10000 | 10000.00 | 20 | 23.45 |
 ```
 - 当指定 `--show-invalid` 且存在无效行时，在对应文件统计结果后附加输出 Markdown 表格形式的无效行文件位置、原因和原始内容
+- Rust 版本中的相对 `--log-dir` 路径按项目根目录解析，因此从子目录执行命令时也会默认读取项目根下的 `log/`

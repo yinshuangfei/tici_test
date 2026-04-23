@@ -14,7 +14,7 @@ from typing import Iterator, List, Optional, Sequence, Tuple
 import mysql.connector
 
 
-DEFAULT_HOST = "10.2.12.81"
+DEFAULT_HOST = "10.2.12.79"
 DEFAULT_PORT = 9529
 DEFAULT_USER = "root"
 DEFAULT_DATABASE = "test"

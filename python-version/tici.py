@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Sequence
 
 
-DEFAULT_HOST = "10.2.12.81"
+DEFAULT_HOST = "10.2.12.79"
 DEFAULT_PORT = 9529
 DEFAULT_USER = "root"
 DEFAULT_DATABASE = "tici"

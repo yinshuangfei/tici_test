@@ -1,6 +1,9 @@
 # 功能设计
 ## 文件
 - main.py
+- src/bin/main.rs
+- src/common.rs
+- src/insert_logic.rs
 
 ## 要求
 - 修改代码的同时，同步更新 README.md 和对应的设计文档
@@ -18,14 +21,19 @@
 
 ## 入口说明
 - 主脚本文件改为 `main.py`
+- Rust 对应实现位于 `src/bin/main.rs`
 - 命令行默认无参数时输出 help 信息
 - `insert-data` 子命令复用 `insert_data.py` 的参数和执行逻辑
 - `auto` 子命令用于执行固定流程模版
 - `main.py` 的输出按命令摘要、阶段动作和目标表分层展示，方便查看多表执行进度
+- Rust 版本复用 `src/common.rs` 中的 MySQL CLI / 查询辅助逻辑，以及 `src/insert_logic.rs` 中的导入逻辑
+- Rust 版本中的相对文件路径按项目根目录解析，不依赖命令执行时所在的 shell 目录
+- Rust 版本中的 `insert-data` 相关入口支持 `--conn-pool-size` 参数，默认 `1000`
+- Rust 版本中的 `create-table`、`drop-table`、`add-index`、`drop-index`、`import-into`、`query`、`check` 和 `auto` 也使用共享 MySQL 连接池执行 SQL，连接池大小同样由 `--conn-pool-size` 控制；每条 SQL 在执行前从池中取连接，执行结束后归还
 
 ### 数据库基础功能
 - 打开和关闭数据库连接
-- 默认连接参数为 "mysql --comments --host 10.2.12.81 --port 9529 -u root"
+- 默认连接参数为 "mysql --comments --host 10.2.12.79 --port 9528 -u root"
 
 ### 创建表
 - 支持输入数据库表的名称，默认名称为 hdfs_log
@@ -52,6 +60,7 @@ CREATE TABLE IF NOT EXISTS test.hdfs_log (
 ```
 ALTER TABLE test.hdfs_log ADD FULLTEXT INDEX ft_idx(body);
 ```
+- Rust 版本中的 `add-index` 在遇到 `Duplicate key name`、`index already exist` 或同名后台 DDL job 已存在时，会将该目标表视为可跳过并继续执行其余目标，而不是直接让整批任务失败
 
 ### 删除表
 - 当目标表数量大于 1 且不是 `--dry-run` 时，`drop-table` 按目标表使用多线程并行执行
@@ -60,9 +69,9 @@ ALTER TABLE test.hdfs_log ADD FULLTEXT INDEX ft_idx(body);
 - 默认操作如下：
 ```
 IMPORT INTO test.hdfs_log (`timestamp`, severity_text, body, tenant_id)
-FROM 's3://data/import-src/hdfs-logs-multitenants.csv?access-key=minioadmin&secret-access-key=minioadmin&endpoint=http://10.2.12.81:19008&force-path-style=true'
+FROM 's3://data/import-src/hdfs-logs-multitenants.csv?access-key=minioadmin&secret-access-key=minioadmin&endpoint=http://10.2.12.79:19008&force-path-style=true'
 WITH 
-    CLOUD_STORAGE_URI='s3://ticidefaultbucket/tici/import-sort?access-key=minioadmin&secret-access-key=minioadmin&endpoint=http://10.2.12.81:19008&force-path-style=true',
+    CLOUD_STORAGE_URI='s3://ticidefaultbucket/tici/import-sort?access-key=minioadmin&secret-access-key=minioadmin&endpoint=http://10.2.12.79:19008&force-path-style=true',
     DETACHED,
     DISABLE_PRECHECK,
     THREAD=8;
@@ -123,22 +132,22 @@ select count(*) from test.hdfs_log where fts_match_word('china',body) or not fts
 - `auto` 默认 csv 文件路径为 `data/hdfs-logs-multitenants.csv`
 - `auto` 的数据导入阶段复用 `insert_data.py` 的批量插入逻辑
 - `auto` 的数据导入阶段通过 Python `mysql.connector` 库执行批量插入
-- `auto` 导入阶段的 `completed import` 日志会追加写入当前目录下的 `log/insert_result.log`
-- `auto` 导入阶段的插入重试日志和最终失败日志会追加写入当前目录下的 `log/insert_error.log`
+- `auto` 导入阶段的 `completed import` 日志会追加写入项目根目录下的 `log/insert_result.log`
+- `auto` 导入阶段的插入重试日志和最终失败日志会追加写入项目根目录下的 `log/insert_error.log`
 - `auto` 默认开启 freshness 检查；支持通过 `--no-freshness` 参数显式关闭，并透传给导入阶段
 - `auto` 中若未显式指定 `--freshness-batch`，则导入阶段默认取 `--row-limit` 的生效值
+- Rust 版本中的导入阶段参数还包括 `--conn-pool-size`，用于控制共享连接池大小，默认 `1000`
 - 当指定 `--no-freshness` 时，导入阶段也不检查 `--freshness-batch <= --row-limit` 这条约束
 - 当 `auto` 未指定 `--no-freshness` 时，导入阶段会在插入完成后每隔 5 秒执行
 ```
 SELECT COUNT(*) FROM <table> WHERE fts_match_word('china',body) OR NOT fts_match_word('china',body);
 ```
 - 当查询结果减去导入前基线值等于本次导入行数时，视为数据可见；否则持续轮询直到达到 30 分钟超时
-- 默认开启的 freshness 日志会写入当前目录下带时间后缀的文件，例如 `log/freshness_progress_YYYYMMDD_HHMMSS.log` 和 `log/freshness_result_YYYYMMDD_HHMMSS.log`
+- 默认开启的 freshness 日志会写入项目根目录下带时间后缀的文件，例如 `log/freshness_progress_YYYYMMDD_HHMMSS.log` 和 `log/freshness_result_YYYYMMDD_HHMMSS.log`
 - 当目标表数量大于 1 时，`auto` 会对每一张目标表依次执行建表、加索引、导入数据的相同流程
 - `auto` 中的建表和加索引阶段复用 `run_sqls` 的多线程逻辑
 - `auto` 中的建表和加索引按阶段执行：先完成所有表的建表，再开始所有表的加索引
 - 当目标表数量大于 1 且不是 `--dry-run` 时，`auto` 中的建表和加索引阶段会按目标表并行执行
-- `auto` 在真实执行时，导入阶段会按目标表使用多线程并行执行
-- `auto` 在 `--dry-run` 模式下，导入阶段保持串行输出，避免多线程打乱 SQL 文本显示
 - `auto` 中的 `--row-limit` 表示每张表的导入行数上限
 - `auto` 支持通过 `--dry-run` 输出整套模板流程而不真正执行
+- 当前仓库中的 Python 实现和 Rust 实现都在 `auto` 的建表和加索引阶段完成后直接返回，因此插入阶段暂未真正执行；Rust 版本保持与当前 Python 代码一致的行为，不额外修正
