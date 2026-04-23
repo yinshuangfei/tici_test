@@ -67,10 +67,12 @@ timestamp,severity_text,body,tenant_id
   - 执行完成后继续从上次读取偏移处处理下一批
   - 直到达到 `--row-limit` 指定的上限，或者文件读取结束
 - 当目标表数量大于 1 时，会对每一张目标表执行相同的导入流程
-- 当目标表数量大于 1 且不是 `--dry-run` 时，多表导入按目标表使用多线程并行执行
-- 当 `--dry-run` 时，多表导入保持串行输出，避免多线程打乱 SQL 文本显示
-- Rust 版本中的多表导入调度使用 Tokio 协程；每个表级导入任务通过 `spawn_blocking` 执行同步的数据库写入逻辑
-- Rust 版本在真实执行模式下使用一个共享 MySQL 连接池
+- 当目标表数量大于 1 且不是 `--dry-run` 时，多表导入按目标表使用 Tokio async task 并行执行
+- 当 `--dry-run` 时，多表导入保持串行输出，避免并发打乱 SQL 文本显示
+- 对于每一个 freshness window，Rust 版本只会解析一次对应区间的 CSV 数据，并将解析后的批次结果共享给该 window 下的所有目标表任务
+- 非 `--dry-run` 模式下，Rust 版本还会对每一个 freshness window 预先构建一次参数化批次结果，并在所有目标表任务之间共享
+- Rust 版本中的多表导入调度和表级数据库写入都运行在 Tokio async task 中，不再通过 `spawn_blocking` 包装同步写库逻辑
+- Rust 版本在真实执行模式下使用一个共享的 `mysql_async` 连接池
 - Rust 版本中的所有导入任务共享同一个 MySQL 连接池
 - 导入前的 baseline 计数、每一轮 batch 插入、以及每一轮 freshness 查询，都会在当前 SQL 执行前临时从池中获取连接
 - 当前 SQL 执行结束后立即归还连接，而不是在整个表级导入任务生命周期中持续占有连接
@@ -89,9 +91,10 @@ INSERT INTO test.hdfs_log (`timestamp`, `severity_text`, `body`, `tenant_id`) VA
 - 程序不会先拼接整份 CSV 的总 SQL，而是逐批构建并逐批执行
 - `--row-limit` 控制总导入行数上限，`--batch-size` 只控制单条 `INSERT INTO` 语句包含的行数
 - 当未显式指定 `--freshness-batch` 时，默认取当前 `--row-limit` 的生效值，因此默认只会执行一轮导入和一轮 freshness 检查；显式指定更小的 `--freshness-batch` 时，才会将一次导入拆成多轮顺序执行
-- 非 `--dry-run` 模式下，数据库写入通过 Python `mysql.connector` 库按批次执行
-- 每批数据使用参数化批量插入，避免手工拼接值再交给外部 `mysql` 客户端执行
-- 当单批次插入失败时，程序会对该批次最多重试 10 次，每次重试前等待 1 秒，并重新建立数据库连接
+- 非 `--dry-run` 模式下，Rust 版本的数据库写入通过 `mysql_async` 按批次异步执行
+- 每个 batch 使用一条多值 `INSERT INTO ... VALUES (?, ?, ?, ?), ...` 配合位置参数执行，避免 `exec_batch` 的逐行 execute 开销
+- 同一个表级导入任务在批次连续成功时会复用同一个数据库连接，而不是每个 batch 都重新从连接池取一次连接
+- 当单批次插入失败时，程序会对该批次最多重试 10 次，每次重试前通过非阻塞 `tokio::time::sleep` 等待 1 秒，并重新建立数据库连接
 - 插入重试日志和最终失败日志除了输出到标准错误外，还会追加写入项目根目录下的 `log/insert_error.log`
 - 导入结束后的 `completed import` 日志除了输出到标准输出外，还会追加写入项目根目录下的 `log/insert_result.log`
 - 默认开启 freshness 检查；当未指定 `--no-freshness` 时，程序会在导入前先查询一次当前目标表总行数，记为基线值
@@ -101,12 +104,14 @@ SELECT COUNT(*) FROM <table> WHERE fts_match_word('china',body) OR NOT fts_match
 ```
   - 当当前总行数减去基线值等于本次成功导入行数时，视为 freshness 达成
   - 轮询超时时间固定为 30 分钟
-  - 轮询间隔固定为 5 秒
+  - 轮询间隔固定为 5 秒，等待方式使用非阻塞 `tokio::time::sleep`
   - 每次 freshness 查询的开始、轮询结果和最终状态都会写入项目根目录下带时间后缀的 freshness 日志文件，例如 `log/freshness_progress_YYYYMMDD_HHMMSS.log` 和 `log/freshness_result_YYYYMMDD_HHMMSS.log`
   - 超时后脚本返回非 0
 - 当指定 `--no-freshness` 时，不执行 freshness 流程，也不检查 `--freshness-batch <= --row-limit` 这条约束
 - 进度输出按时间间隔控制，不再按每个批次输出
-- 当达到 `--print-interval` 指定的秒数间隔时，输出当前表名、累计导入行数和已耗时
+- 当目标表数量大于 1 且不是 `--dry-run` 时，Rust 版本会按 freshness window 输出聚合进度总览；导入阶段会输出总表数、已完成表数、运行中表数、累计导入行数、总目标行数和整体吞吐
+- 当导入阶段结束并进入 freshness 等待后，Rust 版本会继续按相同节奏输出 freshness 聚合进度总览，包括总表数、已达成表数、等待中表数、当前可见行数、总目标行数和整体可见性推进速率
+- `--print-interval` 控制导入阶段和 freshness 阶段聚合进度总览的输出间隔，默认 `3` 秒
 - 导入结束后，输出当前表名、最终总导入行数和总耗时
 - 当 CSV 文件不存在、解码失败、列数不正确、整数转换失败时，脚本直接报错退出
 - 当 CSV 中没有有效数据行时，输出带表名的 `no data rows found`

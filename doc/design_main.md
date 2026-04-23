@@ -29,7 +29,7 @@
 - Rust 版本复用 `src/common.rs` 中的 MySQL CLI / 查询辅助逻辑，以及 `src/insert_logic.rs` 中的导入逻辑
 - Rust 版本中的相对文件路径按项目根目录解析，不依赖命令执行时所在的 shell 目录
 - Rust 版本中的 `insert-data` 相关入口支持 `--conn-pool-size` 参数，默认 `1000`
-- Rust 版本中的 `create-table`、`drop-table`、`add-index`、`drop-index`、`import-into`、`query`、`check` 和 `auto` 也使用共享 MySQL 连接池执行 SQL，连接池大小同样由 `--conn-pool-size` 控制；每条 SQL 在执行前从池中取连接，执行结束后归还
+- Rust 版本中的 `create-table`、`drop-table`、`add-index`、`drop-index`、`import-into`、`query`、`check` 和 `auto` 也使用共享 `mysql_async` 连接池执行 SQL，连接池大小同样由 `--conn-pool-size` 控制；每条 SQL 在执行前从池中取连接，执行结束后归还
 
 ### 数据库基础功能
 - 打开和关闭数据库连接
@@ -41,7 +41,7 @@
 - 支持通过 `--table-offset` 控制生成表名后缀的起始偏移，默认 `0`
 - 当 `--count > 1` 或 `--table-offset > 0` 时，数据库的表名命名规则为 `hdfs_log_<num>`
 - 后缀编号从 `--table-offset + 1` 开始
-- 当表数量大于 1 且不是 `--dry-run` 时，`create-table` 按目标表使用多线程并行执行
+- 当表数量大于 1 且不是 `--dry-run` 时，`create-table` 按目标表使用 Tokio async task 并行执行
 - 表的内容如下：
 ```
 CREATE TABLE IF NOT EXISTS test.hdfs_log (
@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS test.hdfs_log (
 ```
 
 ### 添加索引
-- 当目标表数量大于 1 且不是 `--dry-run` 时，`add-index` 和 `drop-index` 按目标表使用多线程并行执行
+- 当目标表数量大于 1 且不是 `--dry-run` 时，`add-index` 和 `drop-index` 按目标表使用 Tokio async task 并行执行
 - 添加索引的内容如下：
 ```
 ALTER TABLE test.hdfs_log ADD FULLTEXT INDEX ft_idx(body);
@@ -63,7 +63,7 @@ ALTER TABLE test.hdfs_log ADD FULLTEXT INDEX ft_idx(body);
 - Rust 版本中的 `add-index` 在遇到 `Duplicate key name`、`index already exist` 或同名后台 DDL job 已存在时，会将该目标表视为可跳过并继续执行其余目标，而不是直接让整批任务失败
 
 ### 删除表
-- 当目标表数量大于 1 且不是 `--dry-run` 时，`drop-table` 按目标表使用多线程并行执行
+- 当目标表数量大于 1 且不是 `--dry-run` 时，`drop-table` 按目标表使用 Tokio async task 并行执行
 
 ### Import Into
 - 默认操作如下：
@@ -92,7 +92,7 @@ select count(*) from test.hdfs_log where fts_match_word('china',body) or not fts
 - 支持通过 `--sql` 传入自定义查询语句
 - 当自定义 SQL 中包含 `{table}` 时，执行时会替换为当前目标表的 `database.table`
 - 支持通过 `--query-loop-count` 指定同一条查询重复执行的次数，默认 `1`
-- 当 `--query-loop-count > 1` 且不是 `--dry-run` 时，查询任务按目标表和轮次使用多线程并行执行
+- 当 `--query-loop-count > 1` 且不是 `--dry-run` 时，查询任务按目标表和轮次使用 Tokio async task 并行执行
 - 当 `--dry-run` 时，查询阶段保持串行输出，避免多线程打乱 SQL 文本显示
 - `query` 支持通过 `--dry-run` 只输出 SQL 而不真正执行
 
@@ -131,7 +131,7 @@ select count(*) from test.hdfs_log where fts_match_word('china',body) or not fts
 - `auto` 默认导入 `100000` 行数据
 - `auto` 默认 csv 文件路径为 `data/hdfs-logs-multitenants.csv`
 - `auto` 的数据导入阶段复用 `insert_data.py` 的批量插入逻辑
-- `auto` 的数据导入阶段通过 Python `mysql.connector` 库执行批量插入
+- `auto` 的数据导入阶段通过 `mysql_async` 执行批量异步插入
 - `auto` 导入阶段的 `completed import` 日志会追加写入项目根目录下的 `log/insert_result.log`
 - `auto` 导入阶段的插入重试日志和最终失败日志会追加写入项目根目录下的 `log/insert_error.log`
 - `auto` 默认开启 freshness 检查；支持通过 `--no-freshness` 参数显式关闭，并透传给导入阶段
@@ -145,7 +145,7 @@ SELECT COUNT(*) FROM <table> WHERE fts_match_word('china',body) OR NOT fts_match
 - 当查询结果减去导入前基线值等于本次导入行数时，视为数据可见；否则持续轮询直到达到 30 分钟超时
 - 默认开启的 freshness 日志会写入项目根目录下带时间后缀的文件，例如 `log/freshness_progress_YYYYMMDD_HHMMSS.log` 和 `log/freshness_result_YYYYMMDD_HHMMSS.log`
 - 当目标表数量大于 1 时，`auto` 会对每一张目标表依次执行建表、加索引、导入数据的相同流程
-- `auto` 中的建表和加索引阶段复用 `run_sqls` 的多线程逻辑
+- `auto` 中的建表和加索引阶段复用 `run_sqls` 的 Tokio async 并发逻辑
 - `auto` 中的建表和加索引按阶段执行：先完成所有表的建表，再开始所有表的加索引
 - 当目标表数量大于 1 且不是 `--dry-run` 时，`auto` 中的建表和加索引阶段会按目标表并行执行
 - `auto` 中的 `--row-limit` 表示每张表的导入行数上限

@@ -1,15 +1,15 @@
 use clap::{Parser, Subcommand};
-use mysql::Pool;
-use rayon::prelude::*;
+use mysql_async::Pool;
 use tici_test_rust::common::{
     MysqlConfig, build_table_names, execute_sql_with_pool, format_table_target,
-    query_tsv_with_pool, quote_identifier, quote_literal,
+    format_table_targets_summary, query_tsv_with_pool, quote_identifier, quote_literal,
 };
 use tici_test_rust::insert_logic::{
     DEFAULT_BATCH_SIZE, DEFAULT_CONN_POOL_SIZE, DEFAULT_CSV_FILE, DEFAULT_DATABASE, DEFAULT_HOST,
     DEFAULT_PORT, DEFAULT_PROGRESS_INTERVAL, DEFAULT_ROW_LIMIT, DEFAULT_TABLE, DEFAULT_USER,
     InsertArgs, run_insert_data,
 };
+use tokio::task::JoinSet;
 
 const DEFAULT_INDEX: &str = "ft_idx";
 const DEFAULT_IMPORT_SOURCE: &str = "s3://data/import-src/hdfs-logs-multitenants.csv?access-key=minioadmin&secret-access-key=minioadmin&endpoint=http://10.2.12.81:19008&force-path-style=true";
@@ -227,11 +227,7 @@ fn build_optional_pool(conn: &CommonConnArgs) -> Result<Option<Pool>, String> {
 }
 
 fn print_command_summary(command: &str, database: &str, table_names: &[String], dry_run: bool) {
-    let joined = table_names
-        .iter()
-        .map(|name| format_table_target(database, name))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let joined = format_table_targets_summary(database, table_names);
     let mode = if dry_run { "dry-run" } else { "execute" };
     println!("[{command}] mode={mode} tables={joined}");
 }
@@ -395,7 +391,7 @@ fn normalize_query_output(output: &str) -> String {
         .join("\n")
 }
 
-fn run_sqls(
+async fn run_sqls(
     pool: Option<&Pool>,
     dry_run: bool,
     parallel: bool,
@@ -415,7 +411,7 @@ fn run_sqls(
                 println!("{sql}");
             } else {
                 let pool = pool.ok_or_else(|| "missing connection pool".to_string())?;
-                match execute_sql_with_pool(pool, sql) {
+                match execute_sql_with_pool(pool, sql).await {
                     Ok(()) => {}
                     Err(err) if is_ignorable_add_index_error(action, &err) => {
                         println!("[{action}] skip target={target} reason=index-exists");
@@ -430,21 +426,21 @@ fn run_sqls(
         }
         return Ok(());
     }
-    println!("[sql] threads={}", items.len());
-    let results = items
-        .par_iter()
-        .map(|(action, target, sql)| {
+    println!("[sql] tasks={}", items.len());
+    let pool = pool
+        .ok_or_else(|| "missing connection pool".to_string())?
+        .clone();
+    let mut join_set = JoinSet::new();
+    for (action, target, sql) in items.iter().cloned() {
+        let task_pool = pool.clone();
+        join_set.spawn(async move {
             println!("[{action}] target={target}");
-            let pool = match pool {
-                Some(pool) => pool,
-                None => return Err("missing connection pool".to_string()),
-            };
-            match execute_sql_with_pool(pool, sql) {
+            match execute_sql_with_pool(&task_pool, &sql).await {
                 Ok(()) => {
                     println!("[{action}] done target={target}");
                     Ok(())
                 }
-                Err(err) if is_ignorable_add_index_error(action, &err) => {
+                Err(err) if is_ignorable_add_index_error(&action, &err) => {
                     println!("[{action}] skip target={target} reason=index-exists");
                     Ok(())
                 }
@@ -452,13 +448,17 @@ fn run_sqls(
                     "[{action}] failed target={target} sql={sql:?} error={err}"
                 )),
             }
-        })
-        .collect::<Vec<_>>();
+        });
+    }
 
-    let errors = results
-        .into_iter()
-        .filter_map(Result::err)
-        .collect::<Vec<_>>();
+    let mut errors = Vec::new();
+    while let Some(result) = join_set.join_next().await {
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => errors.push(err),
+            Err(err) => errors.push(format!("[sql] task join failed error={err}")),
+        }
+    }
     if errors.is_empty() {
         Ok(())
     } else {
@@ -466,7 +466,7 @@ fn run_sqls(
     }
 }
 
-fn run_query(args: &QueryArgs) -> i32 {
+async fn run_query(args: &QueryArgs) -> i32 {
     if args.query_loop_count < 1 {
         eprintln!("query loop count must be >= 1");
         return 2;
@@ -517,7 +517,7 @@ fn run_query(args: &QueryArgs) -> i32 {
             if args.conn.dry_run {
                 println!("{sql}");
             } else if let Some(pool) = pool.as_ref() {
-                match query_tsv_with_pool(pool, sql) {
+                match query_tsv_with_pool(pool, sql).await {
                     Ok(output) => {
                         if !output.is_empty() {
                             println!("[query] target={target}, {output}");
@@ -532,18 +532,24 @@ fn run_query(args: &QueryArgs) -> i32 {
         }
         return 0;
     }
-    println!("[query] threads={}", statements.len());
-    let results = statements
-        .par_iter()
-        .map(|(_, target, sql)| {
-            (
-                target.clone(),
-                sql.clone(),
-                query_tsv_with_pool(pool.as_ref().expect("pool must exist"), sql),
-            )
-        })
-        .collect::<Vec<_>>();
-    for (target, sql, output) in results {
+    println!("[query] tasks={}", statements.len());
+    let pool = pool.expect("pool must exist");
+    let mut join_set = JoinSet::new();
+    for (_, target, sql) in statements {
+        let task_pool = pool.clone();
+        join_set.spawn(async move {
+            let output = query_tsv_with_pool(&task_pool, &sql).await;
+            (target, sql, output)
+        });
+    }
+    while let Some(result) = join_set.join_next().await {
+        let (target, sql, output) = match result {
+            Ok(value) => value,
+            Err(err) => {
+                eprintln!("[query] task join failed error={err}");
+                return 1;
+            }
+        };
         match output {
             Ok(value) => {
                 if !value.is_empty() {
@@ -560,7 +566,7 @@ fn run_query(args: &QueryArgs) -> i32 {
     0
 }
 
-fn run_check(args: &CheckArgs) -> i32 {
+async fn run_check(args: &CheckArgs) -> i32 {
     if args.query_loop_count < 1 {
         eprintln!("check loop count must be >= 1");
         return 2;
@@ -611,7 +617,9 @@ fn run_check(args: &CheckArgs) -> i32 {
                 continue;
             }
             let normal_output =
-                match query_tsv_with_pool(pool.as_ref().expect("pool must exist"), &normal_sql) {
+                match query_tsv_with_pool(pool.as_ref().expect("pool must exist"), &normal_sql)
+                    .await
+                {
                     Ok(value) => normalize_query_output(&value),
                     Err(err) => {
                         eprintln!(
@@ -624,7 +632,8 @@ fn run_check(args: &CheckArgs) -> i32 {
                     }
                 };
             let tikv_output =
-                match query_tsv_with_pool(pool.as_ref().expect("pool must exist"), &tikv_sql) {
+                match query_tsv_with_pool(pool.as_ref().expect("pool must exist"), &tikv_sql).await
+                {
                     Ok(value) => normalize_query_output(&value),
                     Err(err) => {
                         eprintln!(
@@ -693,7 +702,7 @@ fn to_insert_args(args: &InsertCliArgs) -> InsertArgs {
     }
 }
 
-fn run_auto(args: &AutoArgs) -> i32 {
+async fn run_auto(args: &AutoArgs) -> i32 {
     let tables = match build_table_names(
         &args.common.table,
         args.common.count,
@@ -761,18 +770,19 @@ fn run_auto(args: &AutoArgs) -> i32 {
             return 2;
         }
     };
-    if let Err(err) = run_sqls(pool.as_ref(), args.common.conn.dry_run, true, &create_sqls) {
+    if let Err(err) = run_sqls(pool.as_ref(), args.common.conn.dry_run, true, &create_sqls).await {
         eprintln!("{err}");
         return 1;
     }
-    if let Err(err) = run_sqls(pool.as_ref(), args.common.conn.dry_run, true, &index_sqls) {
+    if let Err(err) = run_sqls(pool.as_ref(), args.common.conn.dry_run, true, &index_sqls).await {
         eprintln!("{err}");
         return 1;
     }
     0
 }
 
-fn main() {
+#[tokio::main(flavor = "multi_thread")]
+async fn main() {
     let cli = Cli::parse();
     let exit_code = match cli.command {
         Commands::CreateTable(args) => {
@@ -799,11 +809,22 @@ fn main() {
                     ))
                 })
                 .collect::<Result<Vec<_>, String>>();
-            match sqls.and_then(|items| {
-                let pool = build_optional_pool(&args.conn)?;
-                run_sqls(pool.as_ref(), args.conn.dry_run, true, &items)
-            }) {
-                Ok(_) => 0,
+            match sqls {
+                Ok(items) => match build_optional_pool(&args.conn) {
+                    Ok(pool) => {
+                        match run_sqls(pool.as_ref(), args.conn.dry_run, true, &items).await {
+                            Ok(_) => 0,
+                            Err(err) => {
+                                eprintln!("{err}");
+                                1
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("{err}");
+                        1
+                    }
+                },
                 Err(err) => {
                     eprintln!("{err}");
                     1
@@ -834,11 +855,22 @@ fn main() {
                     ))
                 })
                 .collect::<Result<Vec<_>, String>>();
-            match sqls.and_then(|items| {
-                let pool = build_optional_pool(&args.conn)?;
-                run_sqls(pool.as_ref(), args.conn.dry_run, true, &items)
-            }) {
-                Ok(_) => 0,
+            match sqls {
+                Ok(items) => match build_optional_pool(&args.conn) {
+                    Ok(pool) => {
+                        match run_sqls(pool.as_ref(), args.conn.dry_run, true, &items).await {
+                            Ok(_) => 0,
+                            Err(err) => {
+                                eprintln!("{err}");
+                                1
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("{err}");
+                        1
+                    }
+                },
                 Err(err) => {
                     eprintln!("{err}");
                     1
@@ -878,11 +910,23 @@ fn main() {
                     ))
                 })
                 .collect::<Result<Vec<_>, String>>();
-            match sqls.and_then(|items| {
-                let pool = build_optional_pool(&args.common.conn)?;
-                run_sqls(pool.as_ref(), args.common.conn.dry_run, true, &items)
-            }) {
-                Ok(_) => 0,
+            match sqls {
+                Ok(items) => match build_optional_pool(&args.common.conn) {
+                    Ok(pool) => {
+                        match run_sqls(pool.as_ref(), args.common.conn.dry_run, true, &items).await
+                        {
+                            Ok(_) => 0,
+                            Err(err) => {
+                                eprintln!("{err}");
+                                1
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("{err}");
+                        1
+                    }
+                },
                 Err(err) => {
                     eprintln!("{err}");
                     1
@@ -917,11 +961,23 @@ fn main() {
                     ))
                 })
                 .collect::<Result<Vec<_>, String>>();
-            match sqls.and_then(|items| {
-                let pool = build_optional_pool(&args.common.conn)?;
-                run_sqls(pool.as_ref(), args.common.conn.dry_run, true, &items)
-            }) {
-                Ok(_) => 0,
+            match sqls {
+                Ok(items) => match build_optional_pool(&args.common.conn) {
+                    Ok(pool) => {
+                        match run_sqls(pool.as_ref(), args.common.conn.dry_run, true, &items).await
+                        {
+                            Ok(_) => 0,
+                            Err(err) => {
+                                eprintln!("{err}");
+                                1
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("{err}");
+                        1
+                    }
+                },
                 Err(err) => {
                     eprintln!("{err}");
                     1
@@ -947,20 +1003,24 @@ fn main() {
                 format_table_target(&args.conn.database, &args.table),
                 sql,
             )];
-            match build_optional_pool(&args.conn)
-                .and_then(|pool| run_sqls(pool.as_ref(), args.conn.dry_run, false, &items))
-            {
-                Ok(_) => 0,
+            match build_optional_pool(&args.conn) {
+                Ok(pool) => match run_sqls(pool.as_ref(), args.conn.dry_run, false, &items).await {
+                    Ok(_) => 0,
+                    Err(err) => {
+                        eprintln!("{err}");
+                        1
+                    }
+                },
                 Err(err) => {
                     eprintln!("{err}");
                     1
                 }
             }
         }
-        Commands::Query(args) => run_query(&args),
-        Commands::Check(args) => run_check(&args),
-        Commands::InsertData(args) => run_insert_data(&to_insert_args(&args)),
-        Commands::Auto(args) => run_auto(&args),
+        Commands::Query(args) => run_query(&args).await,
+        Commands::Check(args) => run_check(&args).await,
+        Commands::InsertData(args) => run_insert_data(&to_insert_args(&args)).await,
+        Commands::Auto(args) => run_auto(&args).await,
     };
     std::process::exit(exit_code);
 }

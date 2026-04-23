@@ -53,7 +53,8 @@ struct Cli {
     dry_run: bool,
 }
 
-fn main() {
+#[tokio::main(flavor = "multi_thread")]
+async fn main() {
     let cli = Cli::parse();
     let args = InsertArgs {
         csv_file: cli.csv_file,
@@ -77,5 +78,5 @@ fn main() {
         dry_run: cli.dry_run,
     };
     let _ = (DEFAULT_FRESHNESS_POLL_INTERVAL, DEFAULT_FRESHNESS_TIMEOUT);
-    std::process::exit(run_insert_data(&args));
+    std::process::exit(run_insert_data(&args).await);
 }

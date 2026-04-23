@@ -1,5 +1,5 @@
 use chrono::Local;
-use mysql::{OptsBuilder, Pool, PoolConstraints, PoolOpts, prelude::Queryable};
+use mysql_async::{OptsBuilder, Pool, PoolConstraints, PoolOpts, Row, Value, prelude::Queryable};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
@@ -51,6 +51,18 @@ pub fn build_table_names(
 
 pub fn format_table_target(database: &str, table_name: &str) -> String {
     format!("{database}.{table_name}")
+}
+
+pub fn format_table_targets_summary(database: &str, table_names: &[String]) -> String {
+    match table_names {
+        [] => String::new(),
+        [table_name] => format_table_target(database, table_name),
+        _ => {
+            let first = format_table_target(database, &table_names[0]);
+            let last = format_table_target(database, &table_names[table_names.len() - 1]);
+            format!("{first}..{last}")
+        }
+    }
 }
 
 pub fn normalize_delimiter(value: &str) -> String {
@@ -128,8 +140,8 @@ pub struct MysqlConfig {
 
 impl MysqlConfig {
     pub fn opts_builder(&self) -> OptsBuilder {
-        OptsBuilder::new()
-            .ip_or_hostname(Some(self.host.clone()))
+        OptsBuilder::default()
+            .ip_or_hostname(self.host.clone())
             .tcp_port(self.port)
             .user(Some(self.user.clone()))
             .pass(if self.password.is_empty() {
@@ -165,7 +177,7 @@ impl MysqlConfig {
         let builder = self
             .opts_builder()
             .pool_opts(PoolOpts::default().with_constraints(constraints));
-        Pool::new(builder).map_err(|err| err.to_string())
+        Ok(Pool::new(builder))
     }
 
     pub fn execute_cli_stdin(&self, sql: &str, echo: bool) -> Result<(), String> {
@@ -197,17 +209,15 @@ impl MysqlConfig {
             ))
         }
     }
-
+}
+pub async fn execute_sql_with_pool(pool: &Pool, sql: &str) -> Result<(), String> {
+    let mut conn = pool.get_conn().await.map_err(|err| err.to_string())?;
+    conn.query_drop(sql).await.map_err(|err| err.to_string())
 }
 
-pub fn execute_sql_with_pool(pool: &Pool, sql: &str) -> Result<(), String> {
-    let mut conn = pool.get_conn().map_err(|err| err.to_string())?;
-    conn.query_drop(sql).map_err(|err| err.to_string())
-}
-
-pub fn query_tsv_with_pool(pool: &Pool, sql: &str) -> Result<String, String> {
-    let mut conn = pool.get_conn().map_err(|err| err.to_string())?;
-    let rows: Vec<mysql::Row> = conn.query(sql).map_err(|err| err.to_string())?;
+pub async fn query_tsv_with_pool(pool: &Pool, sql: &str) -> Result<String, String> {
+    let mut conn = pool.get_conn().await.map_err(|err| err.to_string())?;
+    let rows: Vec<Row> = conn.query(sql).await.map_err(|err| err.to_string())?;
     Ok(mysql_rows_to_strings(rows)
         .into_iter()
         .map(|row| row.join("\t"))
@@ -215,13 +225,13 @@ pub fn query_tsv_with_pool(pool: &Pool, sql: &str) -> Result<String, String> {
         .join("\n"))
 }
 
-fn mysql_rows_to_strings(rows: Vec<mysql::Row>) -> Vec<Vec<String>> {
+fn mysql_rows_to_strings(rows: Vec<Row>) -> Vec<Vec<String>> {
     rows.into_iter()
         .map(|row| {
             row.unwrap()
                 .into_iter()
                 .map(|value| match value {
-                    mysql::Value::NULL => String::new(),
+                    Value::NULL => String::new(),
                     other => mysql_value_to_string(other),
                 })
                 .collect()
@@ -229,25 +239,25 @@ fn mysql_rows_to_strings(rows: Vec<mysql::Row>) -> Vec<Vec<String>> {
         .collect()
 }
 
-fn mysql_value_to_string(value: mysql::Value) -> String {
+fn mysql_value_to_string(value: Value) -> String {
     match value {
-        mysql::Value::Bytes(bytes) => String::from_utf8_lossy(&bytes).to_string(),
-        mysql::Value::Int(value) => value.to_string(),
-        mysql::Value::UInt(value) => value.to_string(),
-        mysql::Value::Float(value) => value.to_string(),
-        mysql::Value::Double(value) => value.to_string(),
-        mysql::Value::Date(year, month, day, hour, minute, second, micros) => format!(
+        Value::Bytes(bytes) => String::from_utf8_lossy(&bytes).to_string(),
+        Value::Int(value) => value.to_string(),
+        Value::UInt(value) => value.to_string(),
+        Value::Float(value) => value.to_string(),
+        Value::Double(value) => value.to_string(),
+        Value::Date(year, month, day, hour, minute, second, micros) => format!(
             "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}.{:06}",
             micros
         ),
-        mysql::Value::Time(is_neg, days, hours, minutes, seconds, micros) => {
+        Value::Time(is_neg, days, hours, minutes, seconds, micros) => {
             let sign = if is_neg { "-" } else { "" };
             format!(
                 "{sign}{days} {hours:02}:{minutes:02}:{seconds:02}.{:06}",
                 micros
             )
         }
-        mysql::Value::NULL => String::new(),
+        Value::NULL => String::new(),
     }
 }
 
